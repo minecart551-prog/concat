@@ -435,6 +435,8 @@
   "effects.natural.name": "自然",
   "effects.neon.description": "阴影偏洋红，高光偏青，对比强烈，色彩浓郁，灯光本身泛起辉光。适合夜晚街道与霓虹招牌。",
   "effects.neon.name": "霓虹",
+  "effects.neonGlow.description": "Vibrant edge-detection luminescence with electric hue cycling.",
+  "effects.neonGlow.name": "Neon Glow",
   "effects.night.description": "让暗光画面舒展开来：提亮阴影并在噪点浮现前加以柔化，白色不溢出，保留夜色的蓝。",
   "effects.night.name": "夜晚",
   "effects.noir.description": "低饱和而沉重，阴影偏冷，四角压暗。",

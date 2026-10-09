@@ -435,6 +435,8 @@
   "effects.natural.name": "Naturel",
   "effects.neon.description": "Magenta in the shadows, cyan in the highlights, hard contrast, colour turned up, and the lights themselves blooming. Night streets and signage.",
   "effects.neon.name": "Néon",
+  "effects.neonGlow.description": "Vibrant edge-detection luminescence with electric hue cycling.",
+  "effects.neonGlow.name": "Neon Glow",
   "effects.night.description": "Low light opened up: shadows lifted with the noise softened before it rises, whites held, the blue of the night kept.",
   "effects.night.name": "Night",
   "effects.noir.description": "Désaturé et lourd, une dominante froide dans les ombres et les coins assombris.",

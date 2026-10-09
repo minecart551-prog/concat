@@ -1,0 +1,37 @@
+# A flat picture has no edge for the glow to light, so every colour here
+# comes back as it went in, at every setting - the shader has its whole
+# say over the steps in a picture. The alpha is the picture's own at
+# every stop, so a title's clear margins stay clear, and a level past
+# white carries on past white as it went in.
+
+[[probe]]
+name = "default, a grey"
+input = [0.18, 0.18, 0.18, 1]
+expect = [0.18, 0.18, 0.18, 1]
+
+[[probe]]
+name = "default, a clear margin"
+input = [0, 0, 0, 0]
+expect = [0, 0, 0, 0]
+
+[[probe]]
+name = "default, half transparent"
+input = [0.6, 0.6, 0.6, 0.5]
+expect = [0.6, 0.6, 0.6, 0.5]
+
+[[probe]]
+name = "default, a highlight past white"
+input = [4, 4, 4, 1]
+expect = [4, 4, 4, 1]
+
+[[probe]]
+name = "minimum, a grey"
+at = "min"
+input = [0.18, 0.18, 0.18, 1]
+expect = [0.18, 0.18, 0.18, 1]
+
+[[probe]]
+name = "maximum, a grey"
+at = "max"
+input = [0.18, 0.18, 0.18, 1]
+expect = [0.18, 0.18, 0.18, 1]

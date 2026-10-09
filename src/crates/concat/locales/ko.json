@@ -435,6 +435,8 @@
   "effects.natural.name": "자연스럽게",
   "effects.neon.description": "Magenta in the shadows, cyan in the highlights, hard contrast, colour turned up, and the lights themselves blooming. Night streets and signage.",
   "effects.neon.name": "네온",
+  "effects.neonGlow.description": "Vibrant edge-detection luminescence with electric hue cycling.",
+  "effects.neonGlow.name": "Neon Glow",
   "effects.night.description": "Low light opened up: shadows lifted with the noise softened before it rises, whites held, the blue of the night kept.",
   "effects.night.name": "Night",
   "effects.noir.description": "채도를 빼고 무겁게, 그림자에는 차가운 색조를 넣고 모서리는 어둡게.",

@@ -435,6 +435,8 @@
   "effects.natural.name": "Prirodno",
   "effects.neon.description": "Magenta u sjenama, cijan u svjetlima, tvrd kontrast, boja pojačana, a sama svjetla cvjetaju. Noćne ulice i natpisi.",
   "effects.neon.name": "Neon",
+  "effects.neonGlow.description": "Vibrant edge-detection luminescence with electric hue cycling.",
+  "effects.neonGlow.name": "Neon Glow",
   "effects.night.description": "Slabo svjetlo otvoreno: sjene podignute, šum omekšan prije nego što naraste, bijele zadržane, plavet noći sačuvana.",
   "effects.night.name": "Noć",
   "effects.noir.description": "Odzasićeno i teško, s hladnim tonom u sjenama i zatamnjenim kutovima.",

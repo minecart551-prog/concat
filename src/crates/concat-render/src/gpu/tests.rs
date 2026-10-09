@@ -1314,6 +1314,55 @@ fn gaussian_at(
     sum.map(|value| value / total)
 }
 
+/// The picture `picture`, `size` pixels, through the neon glow at its
+/// defaults with the clock at zero: the colour here against the colour
+/// two pixels to the right and two above, read in the display encoding
+/// the look is drawn in, lit by the neon that moment's hue reads - the
+/// light added without clipping it - and encoded back into light. The
+/// taps clamp at the edge as the GPU's sampler clamps them. The answer
+/// is premultiplied, as `measured` compares it.
+fn neon_at(picture: &[[f32; 4]], (width, height): (u32, u32), x: i64, y: i64) -> [f64; 4] {
+    let at = |column: i64, row: i64| {
+        let column = column.clamp(0, i64::from(width) - 1);
+        let row = row.clamp(0, i64::from(height) - 1);
+        picture[(row * i64::from(width) + column) as usize]
+    };
+    // The picture is non-negative throughout, so the encoding needs no
+    // sign to carry: `sign(c) * pow(abs(c), 1/2.4)` is the pow itself.
+    let to_display = |c: [f32; 4]| -> [f64; 3] {
+        let [r, g, b, _] = c;
+        [r as f64, g as f64, b as f64].map(|c| c.powf(1.0 / 2.4))
+    };
+    let c = at(x, y);
+    let (here, right, above) = (
+        to_display(c),
+        to_display(at(x + 2, y)),
+        to_display(at(x, y + 2)),
+    );
+    let distance = |a: [f64; 3], b: [f64; 3]| {
+        a.iter()
+            .zip(b)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>()
+            .sqrt()
+    };
+    let edge = distance(here, right) + distance(here, above);
+    // `hue = fract(0 * speed * 0.1)` - zero - over the shader's own
+    // literals, so the neon reads the same three numbers it reads on the
+    // device.
+    let neon = [
+        0.5 + 0.5 * (0.0f64).sin(),
+        0.5 + 0.5 * (2.094f64).sin(),
+        0.5 + 0.5 * (4.188f64).sin(),
+    ];
+    let glow = edge * (75.0 * 0.03);
+    let rgb = [0usize, 1, 2]
+        .map(|i| here[i] + glow * neon[i])
+        .map(|c| c.powf(2.4));
+    let alpha = f64::from(c[3]);
+    [rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha, alpha]
+}
+
 /// A picture `size` pixels with everything a blur can get wrong in it: a
 /// gradient, a checkerboard, dots of light `peak` times white, a hard edge
 /// past white, a half-transparent strip down the left, and a transparent
@@ -1455,6 +1504,41 @@ fn the_gaussian_blur_is_a_direct_gaussian() {
         );
         assert!(rms < 0.0005 * PEAK, "radius {radius}: rms {rms}");
     }
+}
+
+/// The neon glow lights the steps in a picture - its taps read two
+/// pixels to the right and two above - with the neon the clock reads
+/// where it stands, and leaves what is flat and what is clear exactly as
+/// it was: the clear margin keeps its transparency and the flat interior
+/// its colour, so a title keeps its shape under the rim.
+#[test]
+fn neon_glow_lights_a_step_and_leaves_the_flat_and_clear_alone() {
+    let Some(mut gpu) = gpu() else { return };
+    let package = concat_effects::Catalogue::builtin()
+        .get("concat.neon-glow")
+        .expect("a built-in");
+    let pass = package.pass(&BTreeMap::new(), None).expect("a shader");
+    let size = (64, 64);
+    // Half the picture a dim opaque block, half a clear margin, the step
+    // straight down the middle: columns only, so the glow's two taps
+    // cannot both find a different neighbour at once.
+    let picture: Vec<[f32; 4]> = (0..size.1)
+        .flat_map(|y| (0..size.0).map(move |x| (x, y)))
+        .map(|(x, _)| {
+            if x < 32 {
+                [0.02, 0.02, 0.02, 1.0]
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
+            }
+        })
+        .collect();
+    let got = treated(&mut gpu, size, &picture, &[pass]);
+    let (worst, at, rms) = measured(&got, size, 1, |x, y| Some(neon_at(&picture, size, x, y)));
+    eprintln!("neon glow: worst {worst:.5} at {at:?}, rms {rms:.6}");
+    // Half floats at each end of the pass and the pow on them are a
+    // whisper against the rim's own light.
+    assert!(worst < 0.005, "{worst} off at {at:?}");
+    assert!(rms < 0.001, "rms {rms}");
 }
 
 /// A pass's picture is the layer's size divided by its shrink, rounded

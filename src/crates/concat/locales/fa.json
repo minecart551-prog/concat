@@ -435,6 +435,8 @@
   "effects.natural.name": "طبیعی",
   "effects.neon.description": "سرخابی در سایه‌ها، فیروزه‌ای در هایلایت‌ها، کنتراست سخت، رنگ تقویت‌شده و نورهای Bloom شده؛ مناسب خیابان‌ها و تابلوهای شبانه.",
   "effects.neon.name": "نئون",
+  "effects.neonGlow.description": "Vibrant edge-detection luminescence with electric hue cycling.",
+  "effects.neonGlow.name": "Neon Glow",
   "effects.night.description": "Low Light بازتر می‌شود: سایه‌ها بالا می‌آیند، نویز پیش از افزایش نرم می‌شود، سفیدی‌ها حفظ می‌شوند و آبی شب باقی می‌ماند.",
   "effects.night.name": "شب",
   "effects.noir.description": "کم‌رنگ و سنگین، با ته‌رنگ سرد در سایه‌ها و گوشه‌های تیره‌شده.",

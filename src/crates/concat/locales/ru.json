@@ -435,6 +435,8 @@
   "effects.natural.name": "Естественно",
   "effects.neon.description": "Маджента в тенях, циан в светах, жёсткий контраст, цвет выкручен, и сами огни светятся. Ночные улицы и вывески.",
   "effects.neon.name": "Неон",
+  "effects.neonGlow.description": "Vibrant edge-detection luminescence with electric hue cycling.",
+  "effects.neonGlow.name": "Neon Glow",
   "effects.night.description": "Раскрытая ночная съёмка: тени приподняты, шум смягчён прежде, чем он вылезет, белые удержаны, синева ночи сохранена.",
   "effects.night.name": "Ночь",
   "effects.noir.description": "Обесцвечено и тяжело, с холодным оттенком в тенях и затемнёнными углами.",
