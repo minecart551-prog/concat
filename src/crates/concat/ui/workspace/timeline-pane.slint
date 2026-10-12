@@ -121,6 +121,10 @@ export component TimelinePane inherits Rectangle {
     callback dropped(payload: string, seconds: float, y: length);
     callback track-flag-changed(index: int, visible: bool, muted: bool, locked: bool);
     callback track-sized(index: int, size: TrackSize);
+    /// The divider under lane `index` dragged to `boundary`, down the stack
+    /// with the scroll not part of it. From either surface: the lanes or
+    /// the headers' own rows, which are two ends of one line.
+    callback lane-resized(index: int, boundary: length);
     callback track-removed(index: int);
 
     /// The corner button: show something else in this pane's seat.
@@ -386,6 +390,9 @@ export component TimelinePane inherits Rectangle {
                     root.track-flag-changed(index, visible, muted, locked);
                 }
                 sized(index, size) => { root.track-sized(index, size); }
+                lane-resized(index, boundary) => {
+                    root.lane-resized(index, boundary);
+                }
                 removed(index) => { root.track-removed(index); }
             }
 
@@ -432,6 +439,7 @@ export component TimelinePane inherits Rectangle {
                 clip-volume(id, gain) => { root.clip-volume(id, gain); }
                 clip-dragged(seconds, pixels) => { root.clip-dragged(seconds, pixels); }
                 clip-released => { root.clip-released(); }
+                lane-resized(row, boundary) => { root.lane-resized(row, boundary); }
                 menu-items: root.menu-items;
                 menu-height: root.menu-height;
                 menu-token: root.menu-token;

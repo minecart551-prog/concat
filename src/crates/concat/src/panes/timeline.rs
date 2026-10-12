@@ -33,6 +33,10 @@ const ZOOM_STEP: f32 = 1.4;
 pub struct LaneView {
     pub locked: bool,
     pub size: TrackSize,
+    /// A height set by dragging the lane's divider, or zero to take it from
+    /// `size`. Session state like the rest of this: a reopened project
+    /// starts back on Auto.
+    pub height: f32,
 }
 
 impl Default for LaneView {
@@ -40,6 +44,7 @@ impl Default for LaneView {
         Self {
             locked: false,
             size: TrackSize::Auto,
+            height: 0.0,
         }
     }
 }

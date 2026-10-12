@@ -43,7 +43,7 @@ export struct TimelineTabData {
 /// which matters because these lanes are deliberately untyped and a mixed one
 /// still has to be right. The other three are the override, per lane, from
 /// the dropdown in its header.
-export enum TrackSize { auto, small, medium, large }
+export enum TrackSize { auto, small, medium, large, custom }
 
 /// One lane. Deliberately untyped: any media goes on any track, which is why
 /// every lane carries both a visibility and a mute switch rather than one or
@@ -52,7 +52,9 @@ export struct TrackData {
     id: string,
     visible: bool,
     muted: bool,
-    /// What the header's dropdown shows, and what `height` was resolved from.
+    /// What the header's dropdown shows, and what `height` was resolved
+    /// from: `auto`'s rule, one of the presets, or `custom` for a height
+    /// set by dragging the lane's divider.
     size: TrackSize,
     /// The lane's drawn height, and its top edge measured down the stack from
     /// the first lane. Both resolved by Rust: the lanes differ in height, so

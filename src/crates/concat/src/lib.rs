@@ -920,6 +920,11 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_track_sized(on_window!(|state, row: i32, size: TrackSize| {
         state.set_lane_size(row, size);
     }));
+    // A divider dragged: a stream under the pointer, so the lanes alone
+    // republish, the way the other handlers a pointer drives do.
+    editor.on_lane_resized(on_lanes!(|state, row: i32, boundary: f32| {
+        state.set_lane_boundary(row, boundary);
+    }));
     editor.on_track_removed(on_window!(|state, row: i32| {
         state.ask_remove_track(row);
     }));

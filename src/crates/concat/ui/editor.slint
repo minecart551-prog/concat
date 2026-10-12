@@ -403,6 +403,9 @@ export global Editor {
     callback dropped(payload: string, seconds: float, y: length);
     callback track-flag-changed(index: int, visible: bool, muted: bool, locked: bool);
     callback track-sized(index: int, size: TrackSize);
+    /// The divider under lane `index` dragged to this far down the stack:
+    /// a stream while the pointer holds it, and the lanes' heights follow.
+    callback lane-resized(index: int, boundary: length);
     callback track-removed(index: int);
     /// A tab dragged to a new place in the strip. `to` is counted with the
     /// tab already out of its old slot, the way MoveTimeline counts.

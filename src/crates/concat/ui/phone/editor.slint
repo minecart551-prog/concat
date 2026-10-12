@@ -568,6 +568,9 @@ export component PhoneEditor inherits Rectangle {
                 }
                 clip-dragged(seconds, pixels) => { Editor.clip-dragged(seconds, pixels); }
                 clip-released => { Editor.clip-released(); }
+                lane-resized(row, boundary) => {
+                    Editor.lane-resized(row, boundary);
+                }
                 clip-context(id) => { Editor.clip-context(id); }
                 menu-selected(id) => { Editor.menu-selected(id); }
                 band-selected(a, b, c, d, additive) => {

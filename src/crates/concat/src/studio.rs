@@ -91,6 +91,12 @@ pub const MIN_DURATION: f32 = 1.0 / 60.0;
 const LANE_LARGE: f32 = 108.0;
 const LANE_MEDIUM: f32 = 80.0;
 const LANE_SMALL: f32 = 44.0;
+/// The floor and ceiling for a lane's height, preset or dragged. The floor
+/// is the header's controls — 6px of padding over a 26px switch — plus the
+/// 6px divider grip under them, so the grip never covers a switch; the
+/// ceiling is enough to read a frame on.
+const LANE_MIN: f32 = 40.0;
+const LANE_MAX: f32 = 240.0;
 
 /// How long a title runs when it is placed: long enough to read, short
 /// enough that trimming it is a nudge rather than a fight.
@@ -2238,10 +2244,20 @@ impl Studio {
     /// thing on it, without the lanes having to be typed. An empty one takes
     /// the middle size.
     fn lane_height(&self, lane: &Track) -> f32 {
+        // A height dragged by hand wins over every rule below it.
+        if let Some(view) = self.lanes.lane_view.get(&lane.id)
+            && view.height > 0.0
+        {
+            return view.height;
+        }
         match self.lane_size(&lane.id) {
             TrackSize::Small => LANE_SMALL,
             TrackSize::Medium => LANE_MEDIUM,
             TrackSize::Large => LANE_LARGE,
+            // The setters keep size and height in step — picking Custom
+            // freezes the height the lane already has — so this is only a
+            // lane whose view state came apart: medium, as Auto's floor.
+            TrackSize::Custom => LANE_MEDIUM,
             TrackSize::Auto => {
                 let tallest = self
                     .timeline()
@@ -10158,8 +10174,55 @@ impl Studio {
     }
 
     pub fn set_lane_size(&mut self, row: i32, size: TrackSize) {
-        if let Some(id) = self.row_track(row).map(|track| track.id.clone()) {
-            self.lanes.lane_view.entry(id).or_default().size = size;
+        let Some(id) = self.row_track(row).map(|track| track.id.clone()) else {
+            return;
+        };
+        // Custom freezes the height the lane has now; a preset clears any
+        // drag, putting the lane back on the height that preset names.
+        let height = if size == TrackSize::Custom {
+            self.row_track(row)
+                .map_or(LANE_MEDIUM, |track| self.lane_height(track))
+                .clamp(LANE_MIN, LANE_MAX)
+        } else {
+            0.0
+        };
+        let view = self.lanes.lane_view.entry(id).or_default();
+        view.size = size;
+        view.height = height;
+    }
+
+    /// The divider under row `row` dragged to `boundary`, measured down the
+    /// stack with the scroll not part of it. The lane above takes the
+    /// height and the lane below gives it — both held to the heights a lane
+    /// may have: the lane below keeps whatever the boundary leaves it, and
+    /// once that is its floor the stack grows past the divider rather than
+    /// the divider moving on; upward, the lane above stops at its own
+    /// ceiling for the same reason.
+    pub fn set_lane_boundary(&mut self, row: i32, boundary: f32) {
+        if row < 0 {
+            return;
+        }
+        let row = row as usize;
+        let heights = self.lane_heights();
+        if row >= heights.len() {
+            return;
+        }
+        let top: f32 = heights[..row].iter().sum();
+        let above = (boundary - top).clamp(LANE_MIN, LANE_MAX);
+        let mut set: Vec<(String, f32)> = Vec::with_capacity(2);
+        if let Some(track) = self.row_track(row as i32) {
+            set.push((track.id.clone(), above));
+        }
+        if row + 1 < heights.len() {
+            let below = (heights[row] + heights[row + 1] - above).clamp(LANE_MIN, LANE_MAX);
+            if let Some(track) = self.row_track(row as i32 + 1) {
+                set.push((track.id.clone(), below));
+            }
+        }
+        for (id, height) in set {
+            let view = self.lanes.lane_view.entry(id).or_default();
+            view.height = height;
+            view.size = TrackSize::Custom;
         }
     }
 

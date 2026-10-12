@@ -1104,6 +1104,9 @@ export component Lanes inherits Rectangle {
         }
     }
     callback clip-pressed(id: string, additive: bool, edge: int);
+    /// The divider under a lane dragged to `boundary`, down the stack with
+    /// the scroll not part of it: Rust sets both lanes' heights from it.
+    callback lane-resized(row: int, boundary: length);
     /// The split tool pressed a clip: cut it at `seconds` on the timeline.
     callback clip-split(id: string, seconds: float);
     /// A clip's volume line dragged to `gain`.
@@ -1492,6 +1495,76 @@ export component Lanes inherits Rectangle {
                 menu.request-y = wheel.mouse-y;
                 root.asked = true;
                 root.clip-context(entry.id);
+            }
+        }
+
+        // ── the lane dividers ────────────────────────────────────────────
+        //
+        // The foot of every lane is a grip: hold it and the boundary moves —
+        // the lane above takes the height, the lane below gives it, so any
+        // lane can be sized by hand past the header's presets. The strip is
+        // the bottom 6px of the lane, which is the gap the clips already
+        // leave below them — they stop 6px short — and the same strip the
+        // headers' side of the boundary takes, so the two ends read as one
+        // line drawn across both surfaces. It hides no clip, and nothing
+        // else claims it.
+        //
+        // The delta is taken in window coordinates, the way the scrollbar's
+        // thumb takes it: this element moves with the boundary it reports,
+        // so a local delta would measure the element's own motion back out.
+        for track[row] in root.tracks: Rectangle {
+            x: 0;
+            y: root.row-y(row) + track.height - 6px;
+            width: parent.width;
+            height: 6px;
+            visible: self.y + self.height > root.ruler-height && self.y < root.height;
+
+            divider := TouchArea {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                mouse-cursor: ns-resize;
+
+                property <bool> armed;
+                property <length> from;
+                property <length> origin;
+
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.left) {
+                        self.from = track.top + track.height;
+                        self.origin = self.absolute-position.y + self.mouse-y;
+                        self.armed = true;
+                    } else if (event.kind == PointerEventKind.up
+                        || event.kind == PointerEventKind.cancel) {
+                        self.armed = false;
+                    }
+                }
+                moved => {
+                    if (self.armed) {
+                        root.lane-resized(row, self.from
+                            + (self.absolute-position.y + self.mouse-y) - self.origin);
+                    }
+                }
+
+                // The preview axis belongs to whatever is under the pointer,
+                // and this strip is under it too: the hover carries through
+                // rather than dropping out over the boundary.
+                changed mouse-x => {
+                    if (self.has-hover && !self.pressed) { root.hover-at(self.mouse-x); }
+                }
+                changed has-hover => {
+                    if (!self.has-hover) { root.hover-off(); }
+                }
+            }
+
+            if divider.has-hover || divider.armed: Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                background: Theme.accent;
             }
         }
 

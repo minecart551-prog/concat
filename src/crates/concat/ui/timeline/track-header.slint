@@ -27,9 +27,11 @@ import { TrackData, TrackSize } from "model.slint";
 
 // The row-height dropdown, one per lane.
 //
-// A menu and not a cycling button: four values is one too many to walk
-// through blind, and the list is also where "Auto" gets to say that it is the
-// default rather than a fourth size. Sized and placed like the switches beside
+// A menu and not a cycling button: five entries is one too many to walk
+// through blind, and the list is also where "Auto" gets to say that it is
+// the default rather than another size. The last row is not a size to pick
+// but the one a lane lands on when its height is dragged by hand — it says
+// so, and picks nothing new. Sized and placed like the switches beside
 // it, so the row reads as one strip of controls.
 component SizeMenu inherits Rectangle {
     in property <TrackSize> current;
@@ -39,20 +41,22 @@ component SizeMenu inherits Rectangle {
     width: 26px;
     min-height: 26px;
 
-    property <[string]> labels: [I18n.t("common.auto"), I18n.t("common.small"), I18n.t("common.medium"), I18n.t("common.large")];
+    property <[string]> labels: [I18n.t("common.auto"), I18n.t("common.small"), I18n.t("common.medium"), I18n.t("common.large"), I18n.t("common.custom")];
     property <length> row-h: 24px;
     /// The two directions between a TrackSize and its row. Slint has no map,
-    /// and four values do not earn one.
+    /// and five values still do not earn one.
     pure function chosen() -> int {
         return root.current == TrackSize.small ? 1
             : root.current == TrackSize.medium ? 2
             : root.current == TrackSize.large ? 3
+            : root.current == TrackSize.custom ? 4
             : 0;
     }
     pure function size-at(index: int) -> TrackSize {
         return index == 1 ? TrackSize.small
             : index == 2 ? TrackSize.medium
             : index == 3 ? TrackSize.large
+            : index == 4 ? TrackSize.custom
             : TrackSize.auto;
     }
 
@@ -74,7 +78,7 @@ component SizeMenu inherits Rectangle {
         x: 26px - self.width;
         y: 26px;
         width: 116px;
-        height: 4 * root.row-h + 8px;
+        height: 5 * root.row-h + 8px;
         close-policy: close-on-click-outside;
 
         Rectangle {
@@ -218,6 +222,10 @@ component Header inherits Rectangle {
 
     callback flag-changed(visible: bool, muted: bool, locked: bool);
     callback sized(size: TrackSize);
+    /// The divider at this lane's foot dragged to `boundary`, down the
+    /// stack with the scroll not part of it — the same line the lanes
+    /// carry, so the boundary can be taken from either surface.
+    callback lane-resized(boundary: length);
     callback removed();
 
     Rectangle {
@@ -315,6 +323,59 @@ component Header inherits Rectangle {
             }
         }
     }
+
+    // The grip at this lane's foot, in the bottom 6px the switches do not
+    // reach — the same strip of lane the divider on the right-hand side
+    // takes, so the two ends read as one line drawn across both surfaces.
+    // Declared after `row` so its press wins over the row's own.
+    //
+    // The delta is taken in window coordinates, the way the scrollbar's
+    // thumb takes it: this element moves with the boundary it reports, so
+    // a local delta would measure the element's own motion back out.
+    grip := Rectangle {
+        x: 0;
+        y: parent.height - 6px;
+        width: parent.width;
+        height: 6px;
+
+        divider := TouchArea {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: ns-resize;
+
+            property <bool> armed;
+            property <length> from;
+            property <length> origin;
+
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.left) {
+                    self.from = root.track.top + root.track.height;
+                    self.origin = self.absolute-position.y + self.mouse-y;
+                    self.armed = true;
+                } else if (event.kind == PointerEventKind.up
+                    || event.kind == PointerEventKind.cancel) {
+                    self.armed = false;
+                }
+            }
+            moved => {
+                if (self.armed) {
+                    root.lane-resized(self.from
+                        + (self.absolute-position.y + self.mouse-y) - self.origin);
+                }
+            }
+        }
+
+        if divider.has-hover || divider.armed: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: Theme.accent;
+        }
+    }
 }
 
 export component TrackHeaders inherits Rectangle {
@@ -334,6 +395,9 @@ export component TrackHeaders inherits Rectangle {
 
     callback flag-changed(index: int, visible: bool, muted: bool, locked: bool);
     callback sized(index: int, size: TrackSize);
+    /// The divider under lane `index` dragged to `boundary`. The rows carry
+    /// it up; see Editor.lane-resized.
+    callback lane-resized(index: int, boundary: length);
     callback removed(index: int);
 
     clip: true;
@@ -372,6 +436,7 @@ export component TrackHeaders inherits Rectangle {
                 root.flag-changed(index, visible, muted, locked);
             }
             sized(size) => { root.sized(index, size); }
+            lane-resized(boundary) => { root.lane-resized(index, boundary); }
             removed => { root.removed(index); }
         }
 
