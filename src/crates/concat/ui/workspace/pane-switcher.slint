@@ -224,8 +224,55 @@ component RemoveRow inherits Rectangle {
     }
 }
 
+// "Pop out into a window". The same strip of row the view pickers use —
+// not a ticked choice but an action on the view that is already here, so
+// it carries the open-outward mark rather than any pane's own.
+component PopOutRow inherits Rectangle {
+    callback chosen();
+
+    height: 26px;
+
+    Rectangle {
+        x: 4px;
+        y: 0;
+        width: parent.width - 8px;
+        height: parent.height;
+        border-radius: Theme.r-sm;
+        background: touch.has-hover ? Theme.field-hover : Colors.transparent;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 8px;
+
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    glyph: Glyph.external;
+                    size: 13px;
+                    tint: touch.has-hover ? Theme.fg : Theme.fg-muted;
+                }
+            }
+
+            Text {
+                horizontal-stretch: 1;
+                text: I18n.t("paneSwitcher.popOut");
+                color: touch.has-hover ? Theme.fg : Theme.fg-muted;
+                font-size: Theme.fs;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.chosen(); }
+        }
+    }
+}
+
 // The button in a pane's top-right corner: the mark of what this pane is
-// currently showing, and the two ways to change it.
+// currently showing, and the three ways to use it.
 //
 // Click it and a list drops down — pick a view and this seat shows it. Drag it
 // onto another seat and the two trade places, which is the same operation said
@@ -233,6 +280,11 @@ component RemoveRow inherits Rectangle {
 // which of the four boxes "there" is and then name the view that is in it.
 // Blender's corner drag does the same job; a browser's tab strip is the other
 // place everyone has already learnt it.
+// The row after the six views pops the current view into a window of its
+// own — a second copy of the view on a second monitor, which is the same
+// rule the seat system already lives by ("a view can be up in more than
+// one seat") with the extra seat somewhere other than on this window's
+// glass.
 export component PaneSwitcher inherits Rectangle {
     /// What this pane is right now.
     in property <PaneKind> kind;
@@ -243,6 +295,9 @@ export component PaneSwitcher inherits Rectangle {
     /// False when this is the last panel on screen, which cannot be removed.
     in property <bool> removable: true;
     callback picked(kind: PaneKind);
+    /// The pop-out row was used: the view shown here goes into its own
+    /// window. Rust opens it; see popout.rs.
+    callback popped(kind: PaneKind);
     /// The bottom row of the list was used: close this panel.
     callback removed();
 
@@ -252,14 +307,14 @@ export component PaneSwitcher inherits Rectangle {
         "pane:\{root.seat}:\{Panes.label(root.kind)}:\{Panes.id(root.kind)}";
 
     property <length> menu-w: 168px;
-    /// Six view rows, then the rule and the row that removes the panel, then
-    /// the surface's own padding. Summed here because a PopupWindow is sized
-    /// by whoever places it — the same rule the context menu follows, and the
-    /// same reason: a layout cannot report its height back up before it has
-    /// somewhere to be laid out. When the Keyframes row arrived this still
-    /// said four, and the row that removes the panel was the one under the
-    /// clip.
-    property <length> list-h: 6 * 26px + 9px + 26px + 8px;
+    /// Six view rows, then the row that pops the view out, then the rule and
+    /// the row that removes the panel, then the surface's own padding. Summed
+    /// here because a PopupWindow is sized by whoever places it — the same
+    /// rule the context menu follows, and the same reason: a layout cannot
+    /// report its height back up before it has somewhere to be laid out. When
+    /// the Keyframes row arrived this still said four, and the row that
+    /// removes the panel was the one under the clip.
+    property <length> list-h: 7 * 26px + 9px + 26px + 8px;
     /// The whole list when the window has room for it under the button, and
     /// the room otherwise, with the rest reached by scrolling. Never under
     /// three rows: shorter than that is not a list worth scrolling, and
@@ -408,6 +463,10 @@ export component PaneSwitcher inherits Rectangle {
                         kind: PaneKind.timeline;
                         current: root.kind == PaneKind.timeline;
                         chosen => { menu.close(); root.picked(PaneKind.timeline); }
+                    }
+
+                    PopOutRow {
+                        chosen => { menu.close(); root.popped(root.kind); }
                     }
 
                     SwitchDivider { }

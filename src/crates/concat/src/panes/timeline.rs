@@ -196,7 +196,14 @@ impl TimelinePane {
                 self.recentre(studio.playhead);
             }
             TimelineMsg::Resized(width) => {
-                self.width = width.max(0.0);
+                // Two lanes can report at once — a seat and a pop-out
+                // window — and the wider one decides what is worth
+                // publishing: a clip past the narrow one's edge is still
+                // on screen somewhere. The shrunk-back direction is left
+                // out on purpose: publishing a few clips too many is the
+                // cheap way to be wrong, and a window closing does not
+                // announce its old width.
+                self.width = self.width.max(width.max(0.0));
                 self.recentre(studio.playhead);
             }
             TimelineMsg::Reset => {

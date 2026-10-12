@@ -45,6 +45,7 @@ export component Workspace inherits Rectangle {
         index: seat.index;
 
         picked(kind) => { Editor.dock-set(seat.index, kind); }
+        popped(kind) => { Editor.pane-popped(kind); }
         dropped-on(from, side) => { Editor.dock-dropped(from, seat.index, side); }
         removed => { Editor.dock-remove(seat.index); }
     }

@@ -33,6 +33,9 @@ export component Seat inherits Rectangle {
 
     /// Its corner button was used.
     callback picked(kind: PaneKind);
+    /// Its pop-out row was used: the view it is showing goes into its own
+    /// window, on top of — not instead of — what is here.
+    callback popped(kind: PaneKind);
     /// The bottom row of its dropdown was used: close this seat.
     callback removed();
 
@@ -90,6 +93,7 @@ export component Seat inherits Rectangle {
             height: root.height;
 
             pane-picked(kind) => { root.picked(kind); }
+            pane-popped(kind) => { root.popped(kind); }
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
@@ -157,6 +161,7 @@ export component Seat inherits Rectangle {
             height: root.height;
 
             pane-picked(kind) => { root.picked(kind); }
+            pane-popped(kind) => { root.popped(kind); }
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
@@ -221,6 +226,7 @@ export component Seat inherits Rectangle {
             height: root.height;
 
             pane-picked(kind) => { root.picked(kind); }
+            pane-popped(kind) => { root.popped(kind); }
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
@@ -338,6 +344,7 @@ export component Seat inherits Rectangle {
             height: root.height;
 
             pane-picked(kind) => { root.picked(kind); }
+            pane-popped(kind) => { root.popped(kind); }
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
@@ -350,6 +357,7 @@ export component Seat inherits Rectangle {
             height: root.height;
 
             pane-picked(kind) => { root.picked(kind); }
+            pane-popped(kind) => { root.popped(kind); }
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
@@ -367,6 +375,7 @@ export component Seat inherits Rectangle {
             height: root.height;
 
             pane-picked(kind) => { root.picked(kind); }
+            pane-popped(kind) => { root.popped(kind); }
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }

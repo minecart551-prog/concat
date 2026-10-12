@@ -820,6 +820,13 @@ pub struct Studio {
     pub compact: bool,
     pub workspace: (f32, f32),
     pub divider_press: Option<(usize, f32, f32)>,
+    /// The pop-out windows, at most one per view kind: a pane of the
+    /// workspace in a window of its own, showing this same state from
+    /// another window's glass. Every publish fans out to these — they are
+    /// handed the same model objects as the main window, so what they
+    /// share needs no second telling, and the scalars are set on each.
+    /// Opening and closing one is popout.rs's business.
+    pub popouts: Vec<(PaneKind, App)>,
     pub gesture: Gesture,
     /// The snap lines of a stage move in flight; empty between moves.
     pub stage_guides: Vec<StageGuideData>,
@@ -2039,6 +2046,7 @@ impl Studio {
             compact: false,
             workspace: (0.0, 0.0),
             divider_press: None,
+            popouts: Vec::new(),
             gesture: Gesture::None,
             stage_guides: Vec::new(),
             inspector_jump: (0, "", ""),
@@ -7692,7 +7700,19 @@ impl Studio {
 
     // ── publishing ──
 
+    /// Everything the whole window shows — and, past it, every pop-out
+    /// window as well. A pop-out is the same state behind another glass:
+    /// the models it was handed are the same objects, so what they carry
+    /// needs no second telling, and only the scalars have to be set on
+    /// each window in turn.
     pub fn publish(&self, app: &App, models: &Models) {
+        self.publish_one(app, models);
+        for (_, popout) in &self.popouts {
+            self.publish_one(popout, models);
+        }
+    }
+
+    fn publish_one(&self, app: &App, models: &Models) {
         // The tray's three menu labels and the tooltips' bare-letter
         // hints, spelled from the keymap so a rebind moves the words
         // with the key. An action left unbound shows an em dash rather
@@ -7713,7 +7733,7 @@ impl Studio {
         editor.set_keys_split_tool(hint("split-tool").into());
         editor.set_keys_pan(hint("pan").into());
         editor.set_keys_preview_axis(hint("preview-axis").into());
-        self.publish_lanes(app, models);
+        self.publish_lanes_one(app, models);
         self.publish_chrome(app, models);
         self.publish_dock(app, models);
     }
@@ -7778,8 +7798,19 @@ impl Studio {
     }
 
     /// The timeline and the readouts that follow it: what runs on every
-    /// event of a scrub, a drag, a trim or a knob.
+    /// event of a scrub, a drag, a trim or a knob. On every window in
+    /// turn — a drag in a pop-out has to move the main window's lanes as
+    /// much as the other way round; see `publish`.
     pub fn publish_lanes(&self, app: &App, models: &Models) {
+        self.publish_lanes_one(app, models);
+        for (_, popout) in &self.popouts {
+            self.publish_lanes_one(popout, models);
+        }
+    }
+
+    /// What runs on every event of a scrub, a drag, a trim or a knob, on
+    /// the one glass `app` names.
+    fn publish_lanes_one(&self, app: &App, models: &Models) {
         let editor = app.global::<Editor>();
         let project = self.project();
         sync(

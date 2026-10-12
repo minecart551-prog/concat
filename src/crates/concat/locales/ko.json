@@ -672,6 +672,7 @@
   "paneSwitcher.inspector": "인스펙터",
   "paneSwitcher.library": "라이브러리",
   "paneSwitcher.onlyPanel": "유일한 패널",
+  "paneSwitcher.popOut": "새 창으로 열기",
   "paneSwitcher.removePanel": "패널 제거",
   "paneSwitcher.timeline": "타임라인",
   "phone.addATitle": "제목 추가",

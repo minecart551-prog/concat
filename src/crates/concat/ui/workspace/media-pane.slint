@@ -1750,6 +1750,7 @@ export component MediaPane inherits Rectangle {
 
     /// The corner button: show something else in this pane's seat.
     callback pane-picked(kind: PaneKind);
+    callback pane-popped(kind: PaneKind);
     /// Which seat this pane is in. It travels no further than the corner
     /// button, whose drag payload has to say where it is being taken from.
     in property <int> pane-seat;
@@ -1953,6 +1954,7 @@ export component MediaPane inherits Rectangle {
                         seat: root.pane-seat;
                         removable: root.pane-removable;
                         picked(kind) => { root.pane-picked(kind); }
+                        popped(kind) => { root.pane-popped(kind); }
                         removed => { root.pane-removed(); }
                     }
                 }

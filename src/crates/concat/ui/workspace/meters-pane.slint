@@ -39,6 +39,7 @@ export component MetersPane inherits Pane {
     in property <int> pane-seat;
     in property <bool> pane-removable;
     callback pane-picked(kind: PaneKind);
+    callback pane-popped(kind: PaneKind);
     callback pane-removed();
 
     /// The scale's floor, in dB: the meters' 0 is this, their 1 is 0 dB.
@@ -93,6 +94,7 @@ export component MetersPane inherits Pane {
                         seat: root.pane-seat;
                         removable: root.pane-removable;
                         picked(kind) => { root.pane-picked(kind); }
+                        popped(kind) => { root.pane-popped(kind); }
                         removed => { root.pane-removed(); }
                     }
                 }

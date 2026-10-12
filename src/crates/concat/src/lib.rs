@@ -49,6 +49,8 @@ mod platform;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use platform::{ExportPublisher, FilePicker, install_export_publisher, install_file_picker};
 mod panes;
+/// The pop-out window: one pane of the workspace, in a window of its own.
+mod popout;
 mod prefs;
 mod presets;
 mod source;
@@ -158,111 +160,16 @@ pub fn smoke() -> Result<(), slint::PlatformError> {
     start(None, true)
 }
 
-/// [`run_with_project`], or [`smoke`] when `smoke` is set.
-fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::PlatformError> {
-    // The shell doesn't exist yet - it needs the window the backend is about
-    // to help create - but `Shell::with` is a no-op until `Shell::install`
-    // runs, and by the time an OS drop can actually happen, it has. Import
-    // goes through the same `Studio::import` the Import menu uses, so a
-    // dropped file gets the same probe, the same failure notice, and the
-    // same "no project open yet" no-op that a picked one does.
-    let gpu = platform::select_backend(
-        |paths| {
-            Shell::with(|shell, app| {
-                {
-                    let mut studio = shell.studio.borrow_mut();
-                    studio.handle(Msg::Media(MediaMsg::Import(paths)));
-                }
-                shell.studio.borrow_mut().refresh_art();
-                shell.studio.borrow().publish(&app, &shell.models);
-            });
-        },
-        // A press anywhere but the field being typed into takes the focus
-        // back, the way a browser does; the field commits on the way out.
-        // See the handler in platform.rs for why this is a raw event and
-        // not a TouchArea.
-        || Shell::with(|_, app| app.invoke_blur()),
-    )?;
-
-    let host = match Host::start(gpu) {
-        Ok(host) => host,
-        Err(error) => {
-            log::error!("{error}");
-            return Err(slint::PlatformError::Other(error));
-        }
-    };
-
-    // The base fonts, so the preset cards can be drawn in them.
-    fonts::register();
-    let app = App::new()?;
-    app.set_macos(platform::MACOS);
-    // A phone wears the phone shell - see ui/phone/ - and its lanes keep
-    // the playhead at their middle; the strip and the dock are the desk's.
-    let phone = platform::phone();
-    app.set_phone(phone);
-
-    // The user's own packages - imported looks, and any effect folder they
-    // or the community wrote - sit beside the built-ins from the first
-    // frame. One that will not load is skipped, and its reason is the
-    // first thing the window says.
-    let mut studio = Studio::new(host);
-    studio.set_phone(phone);
-    studio.reload_packages(false);
-    studio.watch_packages();
-    let dark = studio.prefs.dark.unwrap_or(true);
-    app.global::<Theme>().set_dark(dark);
-    // The accent is remembered by name and the names live on the Theme
-    // global, so the index is looked up there rather than kept in Rust too.
-    // A remembered hex is a colour picked by hand, which is the slot past
-    // the names.
-    {
-        let theme = app.global::<Theme>();
-        let names = theme.get_accent_names();
-        let count = slint::Model::row_count(&names);
-        match studio.prefs.custom_accent().and_then(format::parse_colour) {
-            Some(colour) => {
-                theme.set_accent_custom(colour);
-                theme.set_accent_choice(count as i32);
-            }
-            None => {
-                let index = studio
-                    .prefs
-                    .accent_index(slint::Model::iter(&names).map(|name| name.to_string()));
-                theme.set_accent_choice(index as i32);
-            }
-        }
-    }
-    // A picked playhead colour is remembered as its hex; none remembered,
-    // or one that will not parse, is the palette's own.
-    if let Some(colour) = studio
-        .prefs
-        .playhead
-        .as_deref()
-        .and_then(format::parse_colour)
-    {
-        let theme = app.global::<Theme>();
-        theme.set_playhead_custom(colour);
-        theme.set_playhead_is_custom(true);
-    }
-
-    let shell = Rc::new(Shell {
-        app: app.as_weak(),
-        studio: RefCell::new(studio),
-        models: Models::new(),
-    });
-    Shell::install(shell.clone());
-
-    // The machine's fonts, for the Text inspector's picker. Read on a
-    // worker: on a machine with a few thousand faces it is a moment, and
-    // the window should not open a moment late for a list nobody is
-    // looking at yet.
-    host::spawn(
-        || concat_text::Fonts::new().families(),
-        |studio, _, _, families| studio.system_fonts_known(families),
-    );
-
-    // Handed over once, here, and never replaced: a fresh model is a reset,
-    // and a reset rebuilds every row that hangs off it.
+/// Hands a window its models, its words, and every callback it can make.
+///
+/// Called once per window: the main one in [`start`], and one for each
+/// pop-out as it opens (see `popout.rs`). Everything below answers through
+/// [`Shell`], so a callback from any window mutates the same studio and
+/// republishes to every window in turn - which is what lets a pop-out be a
+/// second window over the one state rather than a second copy of it.
+fn wire(app: &App, shell: &Shell) {
+    // Handed over once per window, and never replaced: a fresh model is a
+    // reset, and a reset rebuilds every row that hangs off it.
     {
         let editor = app.global::<Editor>();
         let models = &shell.models;
@@ -324,70 +231,6 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             .set_matches(ModelRc::from(models.font_matches.clone()));
     }
 
-    // Settings > About's block, gathered once: nothing in it changes while
-    // the process runs.
-    let facts = sysinfo::system_facts();
-    app.set_system_report(
-        facts
-            .iter()
-            .map(|(label, value)| format!("{label}: {value}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-            .into(),
-    );
-    app.set_system_facts(ModelRc::from(Rc::new(VecModel::from(
-        facts
-            .into_iter()
-            .map(|(label, value)| SystemFactData {
-                label: label.into(),
-                value: value.into(),
-            })
-            .collect::<Vec<_>>(),
-    ))));
-
-    // The ladders' labels, handed over once; the index the form reports back
-    // is what carries the meaning. The shapes carry their ratio as well,
-    // because the form draws each one as a box of its own proportions and
-    // a label is a string Slint cannot do arithmetic with.
-    app.set_start_aspects(ModelRc::from(Rc::new(VecModel::from(
-        ASPECTS
-            .iter()
-            .map(|(label, w, h)| ChipOption {
-                label: SharedString::from(*label),
-                ratio: *w as f32 / *h as f32,
-            })
-            .collect::<Vec<_>>(),
-    ))));
-    // A size and a rate are words and nothing else, so their chips carry no
-    // shape: a zero ratio is what the form draws nothing for.
-    app.set_start_sizes(ModelRc::from(Rc::new(VecModel::from(
-        SIZES
-            .iter()
-            .map(|(label, _)| ChipOption {
-                label: SharedString::from(*label),
-                ratio: 0.0,
-            })
-            .collect::<Vec<_>>(),
-    ))));
-    app.set_start_rates(ModelRc::from(Rc::new(VecModel::from(
-        RATES
-            .iter()
-            .map(|(label, _, _)| ChipOption {
-                label: SharedString::from(*label),
-                ratio: 0.0,
-            })
-            .collect::<Vec<_>>(),
-    ))));
-    app.set_languages(ModelRc::from(Rc::new(VecModel::from(
-        shell
-            .studio
-            .borrow()
-            .languages
-            .iter()
-            .map(|language| SharedString::from(language.name.as_str()))
-            .collect::<Vec<_>>(),
-    ))));
-
     // The interface's words. Every `I18n.t` in the tree asks here by its
     // key; the answer is the active locale's line, else the English. See
     // i18n.rs.
@@ -402,72 +245,6 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         words.on_lookup_upper(|_, key| i18n::t(&key).to_uppercase().into());
         words.set_lang(i18n::current().into());
     }
-
-    // The strip's drag region and double-click. Only the platform's window
-    // can do either; the scene graph forwards the gestures here.
-    app.on_titlebar_begin_drag({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                platform::begin_drag(app.window());
-            }
-        }
-    });
-    app.on_titlebar_toggle_maximize({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                platform::toggle_maximize(app.window());
-                app.set_window_maximized(platform::is_maximized(app.window()));
-            }
-        }
-    });
-    // The strip's own window buttons, on the platforms whose decorations
-    // were taken off. Close goes the way the File menu's Close does - the
-    // project is shut first, so an autosave in flight is not orphaned.
-    app.on_titlebar_minimize({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                platform::minimize(app.window());
-            }
-        }
-    });
-    app.on_titlebar_close(|| {
-        log::info!("close: titlebar X pressed");
-        Shell::with(|shell, app| {
-            shell.studio.borrow_mut().close_project();
-            log::info!("close: project closed, hiding window");
-            app.window().hide().ok();
-            slint::quit_event_loop().ok();
-            log::info!("close: quit_event_loop called");
-        });
-    });
-    // System-driven close (Alt+F4, taskbar close): the same road out.
-    app.window().on_close_requested(|| {
-        log::info!("close: system close request (Alt+F4 / taskbar)");
-        Shell::with(|shell, _app| {
-            shell.studio.borrow_mut().close_project();
-        });
-        slint::quit_event_loop().ok();
-        slint::CloseRequestResponse::HideWindow
-    });
-    // Maximised or not is read back on every resize rather than tracked:
-    // the platform can maximise the window without us - a drag to the top
-    // edge, Win+Up - and the size changing is the one signal every such
-    // route has in common.
-    app.on_window_resized({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                let maximized = platform::is_maximized(app.window());
-                if app.get_window_maximized() != maximized {
-                    app.set_window_maximized(maximized);
-                }
-            }
-        }
-    });
-    app.set_own_window_buttons(platform::OWN_WINDOW_BUTTONS);
 
     // Mutate, then republish. Every handler is one of these three: the whole
     // window, the lanes alone (for the handlers a pointer drives directly,
@@ -1998,6 +1775,252 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             }
         }
     });
+
+    // The pane switcher's pop-out row: this view, in a window of its own.
+    // Bound here, with the rest, so a pop-out can ask for a pop-out by the
+    // same road the main window does; the answer - open one, or bring the
+    // window already showing this view forward - is the same from anywhere.
+    editor.on_pane_popped(move |kind| {
+        Shell::with(|shell, _| crate::popout::open(shell, kind));
+    });
+}
+
+/// [`run_with_project`], or [`smoke`] when `smoke` is set.
+fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::PlatformError> {
+    // The shell doesn't exist yet - it needs the window the backend is about
+    // to help create - but `Shell::with` is a no-op until `Shell::install`
+    // runs, and by the time an OS drop can actually happen, it has. Import
+    // goes through the same `Studio::import` the Import menu uses, so a
+    // dropped file gets the same probe, the same failure notice, and the
+    // same "no project open yet" no-op that a picked one does.
+    let gpu = platform::select_backend(
+        |paths| {
+            Shell::with(|shell, app| {
+                {
+                    let mut studio = shell.studio.borrow_mut();
+                    studio.handle(Msg::Media(MediaMsg::Import(paths)));
+                }
+                shell.studio.borrow_mut().refresh_art();
+                shell.studio.borrow().publish(&app, &shell.models);
+            });
+        },
+        // A press anywhere but the field being typed into takes the focus
+        // back, the way a browser does; the field commits on the way out.
+        // See the handler in platform.rs for why this is a raw event and
+        // not a TouchArea.
+        || Shell::with(|_, app| app.invoke_blur()),
+    )?;
+
+    let host = match Host::start(gpu) {
+        Ok(host) => host,
+        Err(error) => {
+            log::error!("{error}");
+            return Err(slint::PlatformError::Other(error));
+        }
+    };
+
+    // The base fonts, so the preset cards can be drawn in them.
+    fonts::register();
+    let app = App::new()?;
+    app.set_macos(platform::MACOS);
+    // A phone wears the phone shell - see ui/phone/ - and its lanes keep
+    // the playhead at their middle; the strip and the dock are the desk's.
+    let phone = platform::phone();
+    app.set_phone(phone);
+
+    // The user's own packages - imported looks, and any effect folder they
+    // or the community wrote - sit beside the built-ins from the first
+    // frame. One that will not load is skipped, and its reason is the
+    // first thing the window says.
+    let mut studio = Studio::new(host);
+    studio.set_phone(phone);
+    studio.reload_packages(false);
+    studio.watch_packages();
+    let dark = studio.prefs.dark.unwrap_or(true);
+    app.global::<Theme>().set_dark(dark);
+    // The accent is remembered by name and the names live on the Theme
+    // global, so the index is looked up there rather than kept in Rust too.
+    // A remembered hex is a colour picked by hand, which is the slot past
+    // the names.
+    {
+        let theme = app.global::<Theme>();
+        let names = theme.get_accent_names();
+        let count = slint::Model::row_count(&names);
+        match studio.prefs.custom_accent().and_then(format::parse_colour) {
+            Some(colour) => {
+                theme.set_accent_custom(colour);
+                theme.set_accent_choice(count as i32);
+            }
+            None => {
+                let index = studio
+                    .prefs
+                    .accent_index(slint::Model::iter(&names).map(|name| name.to_string()));
+                theme.set_accent_choice(index as i32);
+            }
+        }
+    }
+    // A picked playhead colour is remembered as its hex; none remembered,
+    // or one that will not parse, is the palette's own.
+    if let Some(colour) = studio
+        .prefs
+        .playhead
+        .as_deref()
+        .and_then(format::parse_colour)
+    {
+        let theme = app.global::<Theme>();
+        theme.set_playhead_custom(colour);
+        theme.set_playhead_is_custom(true);
+    }
+
+    let shell = Rc::new(Shell {
+        app: app.as_weak(),
+        studio: RefCell::new(studio),
+        models: Models::new(),
+    });
+    Shell::install(shell.clone());
+
+    // The machine's fonts, for the Text inspector's picker. Read on a
+    // worker: on a machine with a few thousand faces it is a moment, and
+    // the window should not open a moment late for a list nobody is
+    // looking at yet.
+    host::spawn(
+        || concat_text::Fonts::new().families(),
+        |studio, _, _, families| studio.system_fonts_known(families),
+    );
+
+    // Settings > About's block, gathered once: nothing in it changes while
+    // the process runs.
+    let facts = sysinfo::system_facts();
+    app.set_system_report(
+        facts
+            .iter()
+            .map(|(label, value)| format!("{label}: {value}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into(),
+    );
+    app.set_system_facts(ModelRc::from(Rc::new(VecModel::from(
+        facts
+            .into_iter()
+            .map(|(label, value)| SystemFactData {
+                label: label.into(),
+                value: value.into(),
+            })
+            .collect::<Vec<_>>(),
+    ))));
+
+    // The ladders' labels, handed over once; the index the form reports back
+    // is what carries the meaning. The shapes carry their ratio as well,
+    // because the form draws each one as a box of its own proportions and
+    // a label is a string Slint cannot do arithmetic with.
+    app.set_start_aspects(ModelRc::from(Rc::new(VecModel::from(
+        ASPECTS
+            .iter()
+            .map(|(label, w, h)| ChipOption {
+                label: SharedString::from(*label),
+                ratio: *w as f32 / *h as f32,
+            })
+            .collect::<Vec<_>>(),
+    ))));
+    // A size and a rate are words and nothing else, so their chips carry no
+    // shape: a zero ratio is what the form draws nothing for.
+    app.set_start_sizes(ModelRc::from(Rc::new(VecModel::from(
+        SIZES
+            .iter()
+            .map(|(label, _)| ChipOption {
+                label: SharedString::from(*label),
+                ratio: 0.0,
+            })
+            .collect::<Vec<_>>(),
+    ))));
+    app.set_start_rates(ModelRc::from(Rc::new(VecModel::from(
+        RATES
+            .iter()
+            .map(|(label, _, _)| ChipOption {
+                label: SharedString::from(*label),
+                ratio: 0.0,
+            })
+            .collect::<Vec<_>>(),
+    ))));
+    app.set_languages(ModelRc::from(Rc::new(VecModel::from(
+        shell
+            .studio
+            .borrow()
+            .languages
+            .iter()
+            .map(|language| SharedString::from(language.name.as_str()))
+            .collect::<Vec<_>>(),
+    ))));
+
+    // The strip's drag region and double-click. Only the platform's window
+    // can do either; the scene graph forwards the gestures here.
+    app.on_titlebar_begin_drag({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                platform::begin_drag(app.window());
+            }
+        }
+    });
+    app.on_titlebar_toggle_maximize({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                platform::toggle_maximize(app.window());
+                app.set_window_maximized(platform::is_maximized(app.window()));
+            }
+        }
+    });
+    // The strip's own window buttons, on the platforms whose decorations
+    // were taken off. Close goes the way the File menu's Close does - the
+    // project is shut first, so an autosave in flight is not orphaned.
+    app.on_titlebar_minimize({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                platform::minimize(app.window());
+            }
+        }
+    });
+    app.on_titlebar_close(|| {
+        log::info!("close: titlebar X pressed");
+        Shell::with(|shell, app| {
+            shell.studio.borrow_mut().close_project();
+            log::info!("close: project closed, hiding window");
+            app.window().hide().ok();
+            slint::quit_event_loop().ok();
+            log::info!("close: quit_event_loop called");
+        });
+    });
+    // System-driven close (Alt+F4, taskbar close): the same road out.
+    app.window().on_close_requested(|| {
+        log::info!("close: system close request (Alt+F4 / taskbar)");
+        Shell::with(|shell, _app| {
+            shell.studio.borrow_mut().close_project();
+        });
+        slint::quit_event_loop().ok();
+        slint::CloseRequestResponse::HideWindow
+    });
+    // Maximised or not is read back on every resize rather than tracked:
+    // the platform can maximise the window without us - a drag to the top
+    // edge, Win+Up - and the size changing is the one signal every such
+    // route has in common.
+    app.on_window_resized({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                let maximized = platform::is_maximized(app.window());
+                if app.get_window_maximized() != maximized {
+                    app.set_window_maximized(maximized);
+                }
+            }
+        }
+    });
+    app.set_own_window_buttons(platform::OWN_WINDOW_BUTTONS);
+
+    // Bound the same way for every window: the main one here, and a pop-out
+    // as it opens. See `wire`.
+    wire(&app, &shell);
 
     if let Some(path) = project {
         // Use the same loader as Open project, after all callbacks and models

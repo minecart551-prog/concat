@@ -42,6 +42,7 @@ import { ToastData, ToastLayer } from "primitives/toast.slint";
 import { TooltipLayer } from "primitives/tooltip.slint";
 import { FontSearch } from "inspector/font-picker.slint";
 import { Meters } from "workspace/meters-pane.slint";
+import { Seat } from "workspace/seat.slint";
 import { Workspace } from "workspace/workspace.slint";
 import {
     ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
@@ -66,7 +67,10 @@ export {
 }
 
 export component App inherits Window {
-    title: "Concat";
+    // The main window wears the product's name; a pop-out wears its view's
+    // first, so a taskbar of windows says which is which. The label is the
+    // same one the pane switcher's rows read.
+    title: root.popout ? "\{Panes.label(root.popout-kind)} — Concat" : "Concat";
     // The taskbar's and Alt-Tab's picture on Windows, and the window
     // list's on X11. A Mac takes its Dock icon from the bundle and ignores
     // this; the .exe's own, for Explorer, is embedded by build.rs.
@@ -94,9 +98,12 @@ export component App inherits Window {
     preferred-height: root.phone ? 880px : 900px;
     // Below this the three columns cannot all hold their minimum and the panes
     // start eating each other. The phone shell has no columns, and a phone
-    // is narrower than this on every side.
-    min-width: root.phone ? 320px : 900px;
-    min-height: root.phone ? 480px : 560px;
+    // is narrower than this on every side. A pop-out window is one pane and
+    // asks for nothing: the meters on their own are narrower than any of
+    // these numbers, and a floor above their width is a window that cannot
+    // be made small enough to get out of the way.
+    min-width: root.popout ? 240px : root.phone ? 320px : 900px;
+    min-height: root.popout ? 160px : root.phone ? 480px : 560px;
     // So the shortcuts work before anything has been clicked. Without it the
     // window opens with nothing focused, and a key would have nowhere to be
     // delivered from until the first press landed somewhere.
@@ -171,6 +178,15 @@ export component App inherits Window {
     /// strip, no dock - and the launch screen carries its own verbs, as it
     /// does whenever it is narrow. Set once from Rust; see platform::phone.
     in property <bool> phone;
+    /// A pop-out window: one pane of the workspace in a window of its own,
+    /// showing the same state the main window does — the seat system's rule
+    /// that a view can be up in more than one seat, with the extra seat
+    /// living on another window's glass. All three are Rust's; see popout.rs.
+    in-out property <bool> popout: false;
+    in-out property <PaneKind> popout-kind: PaneKind.preview;
+    /// The pop-out's own close: that window goes, and the project and the
+    /// main window carry on.
+    callback popout-close();
 
     /// The File / Edit / View menus. Built in Rust like every other menu here,
     /// because what belongs on them depends on the project.
@@ -405,24 +421,28 @@ export component App inherits Window {
         // save, undo, redo, split, copy and the rest. They are the
         // keymap's now: a person moves one in Settings › Shortcuts, and
         // the key, the menu row's label and the dispatch all follow it.
+        //
+        // The four that open the strip's menus are the main window's and
+        // not a pop-out's: that window has no strip to open a menu under,
+        // and a menu with nowhere to hang opens nowhere.
         KeyBinding {
             keys: @keys(F10);
-            enabled: !root.on-start && !root.macos && !root.phone;
+            enabled: !root.on-start && !root.macos && !root.phone && !root.popout;
             activated => { root.open-menu-from-keys(0); }
         }
         KeyBinding {
             keys: @keys(Alt + F);
-            enabled: !root.on-start && !root.macos && !root.phone;
+            enabled: !root.on-start && !root.macos && !root.phone && !root.popout;
             activated => { root.open-menu-from-keys(0); }
         }
         KeyBinding {
             keys: @keys(Alt + E);
-            enabled: !root.on-start && !root.macos && !root.phone;
+            enabled: !root.on-start && !root.macos && !root.phone && !root.popout;
             activated => { root.open-menu-from-keys(1); }
         }
         KeyBinding {
             keys: @keys(Alt + V);
-            enabled: !root.on-start && !root.macos && !root.phone;
+            enabled: !root.on-start && !root.macos && !root.phone && !root.popout;
             activated => { root.open-menu-from-keys(2); }
         }
         // Open and leaving work from the launch screen too: it opens
@@ -480,7 +500,11 @@ export component App inherits Window {
             // No strip on a phone: its menus, its window buttons and its
             // drag region are all a desk's, and the phone shell's top bar
             // carries the two verbs that are not.
-            if !root.phone: TitleBar {
+            //
+            // And none in a pop-out: that window carries the platform's own
+            // decorations, bar and close button included — see popout.rs —
+            // so a strip here would be a second title bar on top of one.
+            if !root.phone && !root.popout: TitleBar {
                 macos: root.macos;
                 minimal: root.on-start;
                 deep: root.on-start;
@@ -510,7 +534,7 @@ export component App inherits Window {
                 export-clicked => { root.export-clicked(); }
             }
 
-            if root.on-start: StartScreen {
+            if root.on-start && !root.popout: StartScreen {
                 vertical-stretch: 1;
 
                 recents: root.recents;
@@ -528,14 +552,14 @@ export component App inherits Window {
             // nothing is passed to it: it is a box with four seats in it, and
             // the views inside those seats reach the state directly. See
             // editor.slint.
-            if !root.on-start && !root.phone: Workspace {
+            if !root.on-start && !root.phone && !root.popout: Workspace {
                 vertical-stretch: 1;
             }
 
             // The phone's editor reads the same global; only the shell round
             // it differs. Its three verbs that are the window's - export,
             // settings, closing the project - go where the strip's went.
-            if !root.on-start && root.phone: PhoneEditor {
+            if !root.on-start && root.phone && !root.popout: PhoneEditor {
                 vertical-stretch: 1;
                 project-name: root.project-name;
                 status: root.project-status;
@@ -543,6 +567,28 @@ export component App inherits Window {
                 export-clicked => { root.export-clicked(); }
                 open-settings => { root.open-settings(); }
                 close-project => { root.app-menu-selected("close-project"); }
+            }
+
+            // A pop-out window *is* one seat, filling it, showing the view
+            // it was opened for — and it keeps that view for its life, so
+            // the window's name and the studio's list of pop-outs stay
+            // true. Its corner button still opens: every row there means
+            // "have this view up", which here is answered by the window
+            // already up, so picking one brings that view's window forward.
+            // The remove row closes the window, the one way back out that
+            // a window with no strip of its own leaves lying around.
+            if root.popout: Seat {
+                vertical-stretch: 1;
+                kind: root.popout-kind;
+                // Not a seat of the dock tree, and never a number one of
+                // them could hold: the only thing `index` is read for here
+                // is the drag payload, and nothing in this window trades
+                // seats with anything.
+                index: 99;
+                picked(kind) => { Editor.pane-popped(kind); }
+                popped(kind) => { Editor.pane-popped(kind); }
+                dropped-on(from, side) => { }
+                removed => { root.popout-close(); }
             }
         }
     }
@@ -788,7 +834,10 @@ export component App inherits Window {
     // failed behind a dialog is exactly the case a notice is for. It takes no
     // events — there is no TouchArea anywhere in it — so covering the window
     // costs the window nothing.
-    ToastLayer {
+    //
+    // Not in a pop-out: the toast is the main window's to show, and one
+    // notice popping in every window it was sent to is several notices.
+    if !root.popout: ToastLayer {
         x: 0;
         y: 0;
         width: root.width;

@@ -60,6 +60,10 @@ export global Editor {
     /// A panel was dragged from one seat and dropped on another. The middle
     /// trades the two; an edge splits the seat it landed on.
     callback dock-dropped(from: int, onto: int, side: DockSide);
+    /// A seat's pop-out row was used: the view it is showing opens in a
+    /// window of its own — a second copy of it, the way a second seat
+    /// would be, with the window wherever the OS puts it. See popout.rs.
+    callback pane-popped(kind: PaneKind);
 
     /// A gutter went down, and then moved. Two callbacks rather than one
     /// absolute position, because the ratio a drag is adjusting is the one it

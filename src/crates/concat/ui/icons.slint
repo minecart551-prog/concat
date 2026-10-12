@@ -76,6 +76,9 @@ export enum Glyph {
     hand,
     /// the title strip's maximise: one square; restore is `copy`, two
     maximize,
+    /// a pane opened outward into a window of its own: the square with the
+    /// arrow leaving it — the mark every browser gives "open in new window"
+    external,
     angle,
     align-left,
     align-center-x,
@@ -489,6 +492,13 @@ export component Icon inherits Rectangle {
     if root.glyph == Glyph.maximize: Stroked {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z";
+    }
+
+    // lucide/external-link: for the pane switcher's pop-out row.
+    if root.glyph == Glyph.external: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M15 3h6v6" + "M10 14 21 3"
+            + "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6";
     }
 
     // lucide's rotate-ccw: the arrow every panel means by "put it back".
