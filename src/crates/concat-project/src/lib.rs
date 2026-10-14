@@ -431,6 +431,72 @@ mod tests {
         assert_eq!(start_of(&editor, &b[0]), 15.0);
     }
 
+    /// Two clips that butt exactly, far enough down a cut, must still read
+    /// as touching when a drag shifts them — not as covering one another.
+    ///
+    /// A real cut had these two: neither start nor duration is representable
+    /// in `f32`, and near a thousand seconds an `f32` step is about 6e-5,
+    /// a hundred times the `TOUCH` of 1e-6 that exists to let touching clips
+    /// count as touching. Dragged in `f32` the pair overlapped by 1.2e-4 at
+    /// some shifts and not at others, so `resolve_moves` refused the whole
+    /// group — the drag ran, froze, and ran again on nothing but how the
+    /// rounding happened to fall.
+    #[test]
+    fn a_group_of_touching_clips_far_down_the_timeline_is_not_refused_by_rounding() {
+        let (mut editor, media_id, _first) = fixture();
+        let track = editor.project().active().tracks[1].id.clone();
+        let starts = [989.5344848632812, 1007.6214599609376];
+        let durations = [18.08697509765625, 4.914306640625];
+        let ids = lane(&mut editor, &media_id, &track, &starts);
+        for (id, (start, duration)) in ids.iter().zip(starts.iter().zip(durations)) {
+            let clip = editor
+                .project_mut()
+                .active_mut()
+                .clip_mut(id)
+                .expect("just added");
+            clip.start = *start;
+            clip.duration = duration;
+        }
+        let moves = |shift: f64| -> Vec<ClipMove> {
+            ids.iter()
+                .zip(starts)
+                .map(|(id, start)| ClipMove {
+                    clip_id: id.clone(),
+                    start: start + shift,
+                    track_id: track.clone(),
+                })
+                .collect()
+        };
+        let timeline = editor.project().active();
+
+        // The shift that f32 rounding turned into a 1.2e-4 overlap: the pair
+        // still reads as touching once the arithmetic is f64 throughout.
+        for shift in [0.0, 40.137, 77.3, 123.456, 210.7, 354.48] {
+            let landed = timeline
+                .resolve_moves(&moves(shift))
+                .expect("touching clips must not read as covering one another");
+            assert_eq!(landed[0].start, starts[0] + shift);
+            assert_eq!(landed[1].start, starts[1] + shift);
+        }
+
+        // And the same pair narrowed to `f32` the way the drag used to
+        // narrow it does overlap, which is why the drag has to stay in
+        // `f64` rather than relying on `TOUCH` to absorb the rounding.
+        let narrowed: Vec<ClipMove> = ids
+            .iter()
+            .zip(starts)
+            .map(|(id, start)| ClipMove {
+                clip_id: id.clone(),
+                start: f64::from(start as f32 + 40.137_f32),
+                track_id: track.clone(),
+            })
+            .collect();
+        assert!(
+            timeline.resolve_moves(&narrowed).is_none(),
+            "an f32 drag of touching clips overlaps - the bug this guards"
+        );
+    }
+
     #[test]
     fn a_move_whose_clips_would_cover_each_other_stays_put() {
         let (mut editor, media_id, _first) = fixture();

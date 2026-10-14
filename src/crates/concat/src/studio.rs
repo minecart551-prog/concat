@@ -364,9 +364,18 @@ pub enum Edge {
 }
 
 /// Where one clip sat when a gesture began, so the whole set moves rigidly.
+///
+/// `start` is `f64`, the model's own precision, and not `f32`: a clip's
+/// start near the far end of a long cut lands around a thousand seconds,
+/// where an `f32` is only good to about 6e-5. Clips that butt exactly
+/// against each other - the normal state of a packed lane - were pushed
+/// apart by that much or together by it, and pushed together they read as
+/// covering one another, which `resolve_moves` answers by refusing the
+/// whole drag. The drag froze at one moment and ran at the next, purely
+/// on how the rounding fell.
 pub struct MoveOrigin {
     pub clip: String,
-    pub start: f32,
+    pub start: f64,
     pub row: i32,
 }
 
@@ -2312,28 +2321,31 @@ impl Studio {
     /// Clip edges, the playhead and zero all pull, and the nearest inside
     /// the threshold wins.
     pub fn snapped(&self, time: f32, threshold: f32, exclude: &str) -> f32 {
+        self.snapped_group(
+            f64::from(time),
+            threshold,
+            &HashSet::from([exclude.to_owned()]),
+        ) as f32
+    }
+
+    /// The same, with every clip in `moving` left out of what pulls.
+    ///
+    /// The edges of clips travelling with a drag are not things to align
+    /// to: they move with it, so a group offered its own shapes is pulled
+    /// back onto the shape it came from rather than onto where the pointer
+    /// is. The wider the view, the more of those edges sit inside the
+    /// threshold, so the pull grows as the cut is zoomed out.
+    pub fn snapped_group(&self, time: f64, threshold: f32, moving: &HashSet<String>) -> f64 {
         if !self.lanes.snap {
             return time;
         }
-        let mut best = time;
-        let mut best_distance = threshold;
-        let mut consider = |target: f32| {
-            let distance = (target - time).abs();
-            if distance < best_distance {
-                best = target;
-                best_distance = distance;
-            }
-        };
-        consider(0.0);
-        consider(self.playhead);
-        for clip in &self.timeline().clips {
-            if clip.id == exclude {
-                continue;
-            }
-            consider(clip.start as f32);
-            consider((clip.start + clip.duration) as f32);
-        }
-        best
+        snap_over(
+            time,
+            threshold,
+            f64::from(self.playhead),
+            &self.timeline().clips,
+            moving,
+        )
     }
 
     // ── changing the edit ──
@@ -4233,7 +4245,7 @@ impl Studio {
                 let clip = self.clip(clip_id)?;
                 Some(MoveOrigin {
                     clip: clip.id.clone(),
-                    start: clip.start as f32,
+                    start: clip.start,
                     row: self.row_of(&clip.track_id),
                 })
             })
@@ -4259,7 +4271,12 @@ impl Studio {
                     return;
                 };
                 let threshold = 8.0 * self.lanes.seconds_per_pixel;
-                let snapped = self.snapped(anchor.start + seconds, threshold, primary);
+                // Everything travelling with the drag is left out of what
+                // pulls: a group's own edges are not places to put it, and
+                // a group dragged back through them cannot be dragged.
+                let moving: HashSet<String> = origins.iter().map(|o| o.clip.clone()).collect();
+                let snapped =
+                    self.snapped_group(anchor.start + f64::from(seconds), threshold, &moving);
                 let shift = snapped - anchor.start;
                 let rows = nearest_row(lanes, row_top(lanes, anchor.row) + pixels) - anchor.row;
                 let count = self.timeline().tracks.len() as i32;
@@ -4276,7 +4293,13 @@ impl Studio {
                             })?;
                         Some(ClipMove {
                             clip_id: origin.clip.clone(),
-                            start: f64::from((origin.start + shift).max(0.0)),
+                            // `origin.start + shift` in `f64`, not `f32`:
+                            // two clips that butt exactly against each
+                            // other round to overlapping positions in
+                            // `f32` at this distance down the timeline,
+                            // and one overlapping pair refuses the whole
+                            // drag.
+                            start: (origin.start + shift).max(0.0),
                             track_id,
                         })
                     })
@@ -10628,6 +10651,41 @@ fn detach_plan(clip: &Clip, has_audio: bool, detached: bool) -> DetachPlan {
     }
 }
 
+/// The instant a drag sits at: `time`, unless a clip edge, the playhead or
+/// zero would put it nearer within `threshold`. The edges of clips in
+/// `moving` never pull, since they travel with the drag — see
+/// `Studio::snapped_group`.
+///
+/// `f64` throughout, for the same reason `MoveOrigin` is: a target cast to
+/// `f32` near a thousand seconds lands a whole quantisation step away from
+/// the edge it is meant to be, which is far more than the threshold that
+/// decides whether it pulls at all.
+fn snap_over(
+    time: f64,
+    threshold: f32,
+    playhead: f64,
+    clips: &[Arc<Clip>],
+    moving: &HashSet<String>,
+) -> f64 {
+    let threshold = f64::from(threshold);
+    let mut best = time;
+    let mut best_distance = threshold;
+    let mut consider = |target: f64| {
+        let distance = (target - time).abs();
+        if distance < best_distance {
+            best = target;
+            best_distance = distance;
+        }
+    };
+    consider(0.0);
+    consider(playhead);
+    for clip in clips.iter().filter(|clip| !moving.contains(&clip.id)) {
+        consider(clip.start);
+        consider(clip.start + clip.duration);
+    }
+    best
+}
+
 /// Whether a move puts any clip somewhere other than where `before` has
 /// it: another lane, or another start. A drag works in `f32` seconds, so a
 /// start is compared as the drag holds it; one that only went through that
@@ -10688,6 +10746,45 @@ mod tests {
         custom_rate, fps_of, grading_rows, home_folder, key_commands, packed, place_in, shown,
         wheel_partners, write_keyable,
     };
+
+    /// A group dragged back through the edges of the clips travelling with
+    /// it is not pulled onto them: those clips move too, so their edges are
+    /// not places the group can be put. Snapping to them held a select-all
+    /// in the shape its own lane already had, and made it undraggable in
+    /// the direction it came from, where all those edges lay — the wider
+    /// the view, the more of them fell inside the threshold.
+    #[test]
+    fn a_drag_is_not_pulled_onto_the_edges_of_the_clips_it_drags() {
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        use concat_project::model::{Clip, ClipKind};
+
+        let clips: Vec<Arc<Clip>> = [0.0, 10.0, 20.0, 30.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &start)| {
+                Arc::new(Clip::blank(
+                    format!("c{i}").as_str(),
+                    "t",
+                    ClipKind::Video,
+                    "c",
+                    start,
+                    10.0,
+                ))
+            })
+            .collect();
+        // Every clip is travelling with the drag, so nothing pulls and the
+        // drag sits exactly where the pointer put it.
+        let moving: HashSet<String> = clips.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(super::snap_over(15.0, 2.0, -1.0, &clips, &moving), 15.0);
+        // A clip left behind still pulls: thirty to forty is within two
+        // seconds of thirty-nine, and the drag goes to its edge.
+        let none = HashSet::new();
+        assert_eq!(super::snap_over(39.0, 2.0, -1.0, &clips, &none), 40.0);
+        // Zero and the playhead pull for a dragged group just the same.
+        assert_eq!(super::snap_over(0.4, 2.0, -1.0, &clips, &moving), 0.0);
+    }
 
     /// A pasted group keeps its shape from `base` on, its rows shifted
     /// and held inside the lanes it lands in, a locked row passed over
