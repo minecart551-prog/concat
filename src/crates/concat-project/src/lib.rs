@@ -431,6 +431,39 @@ mod tests {
         assert_eq!(start_of(&editor, &b[0]), 15.0);
     }
 
+    /// A group dragged past the lane's start keeps its shape and lands at
+    /// zero. Clamping the clips that would pass zero one at a time piled
+    /// them all on it, the covering test then saw moved clips over each
+    /// other - which no shift in time can fix - and the whole move did
+    /// nothing, so a selection could be dragged back and forth but never
+    /// off the start.
+    #[test]
+    fn a_group_dragged_past_the_start_lands_at_zero_as_a_shape() {
+        let (mut editor, media_id, _first) = fixture();
+        let tracks = editor.project().active().tracks.clone();
+        let pair = lane(&mut editor, &media_id, &tracks[1].id, &[10.0, 20.0]);
+        editor
+            .apply(Command::MoveClips {
+                moves: vec![
+                    ClipMove {
+                        clip_id: pair[0].clone(),
+                        start: -15.0,
+                        track_id: tracks[1].id.clone(),
+                    },
+                    ClipMove {
+                        clip_id: pair[1].clone(),
+                        start: -5.0,
+                        track_id: tracks[1].id.clone(),
+                    },
+                ],
+            })
+            .expect("moves");
+        // The ten seconds between them are still there, and the earliest
+        // is at the lane's start rather than the pair thrown back.
+        assert_eq!(start_of(&editor, &pair[0]), 0.0);
+        assert_eq!(start_of(&editor, &pair[1]), 10.0);
+    }
+
     /// Two clips that butt exactly, far enough down a cut, must still read
     /// as touching when a drag shifts them — not as covering one another.
     ///

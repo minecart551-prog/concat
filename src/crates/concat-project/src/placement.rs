@@ -84,7 +84,7 @@ impl Timeline {
                 Some((
                     ClipMove {
                         clip_id: wanted.clip_id.clone(),
-                        start: wanted.start.max(0.0),
+                        start: wanted.start,
                         track_id,
                     },
                     clip.duration,
@@ -114,6 +114,12 @@ impl Timeline {
             .iter()
             .map(|(m, _)| m.start)
             .fold(f64::INFINITY, f64::min);
+        // Zero is a constraint on the *group*, held by `fits` below, and
+        // never a clamp on one clip: clamping the clips that would pass it
+        // one at a time piles them on zero, the covering test then sees
+        // moved clips over each other, and the whole drag snaps home.
+        // The shape is what a group drag is for; the lane's start is where
+        // it stops, and it stops as a shape.
         let fits = |shift: f64| {
             earliest + shift >= -TOUCH
                 && wanted.iter().all(|(m, len)| {

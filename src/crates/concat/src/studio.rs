@@ -4293,13 +4293,18 @@ impl Studio {
                             })?;
                         Some(ClipMove {
                             clip_id: origin.clip.clone(),
+                            // Not clamped at zero here: `resolve_moves`
+                            // holds that as one constraint on the group,
+                            // and clamping per clip would fold everything
+                            // past zero onto it and send the drag home.
+                            //
                             // `origin.start + shift` in `f64`, not `f32`:
                             // two clips that butt exactly against each
                             // other round to overlapping positions in
                             // `f32` at this distance down the timeline,
                             // and one overlapping pair refuses the whole
                             // drag.
-                            start: (origin.start + shift).max(0.0),
+                            start: origin.start + shift,
                             track_id,
                         })
                     })
