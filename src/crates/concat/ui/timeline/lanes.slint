@@ -1237,6 +1237,12 @@ export component Lanes inherits Rectangle {
     // report to repeat.
     property <bool> scrubbing;
     property <bool> clip-dragging;
+    /// The clip the pointer went down on. It is the element the drag's
+    /// pointer events are delivered to, so it must stay `visible` for the
+    /// whole gesture: an invisible element stops reacting to mouse input,
+    /// which would take the gesture away the moment the clip was carried
+    /// off the edge of the view.
+    property <string> pressed-id;
     property <length> pointer-x;
     property <float> drag-seconds;
     property <length> drag-pixels;
@@ -1458,8 +1464,12 @@ export component Lanes inherits Rectangle {
             y: root.row-y(entry.row) + 4px;
             width: Math.max(2px, entry.duration * root.px-per-second);
             height: Math.max(2px, root.tracks[entry.row].height - 10px);
-            visible: self.x + self.width > 0 && self.x < root.width
-                && self.y + self.height > root.ruler-height && self.y < root.height;
+            // Off the view, a clip is not drawn - but never the one the
+            // pointer is on: it owns the gesture's events, and hiding it
+            // would take them away mid-drag.
+            visible: (self.x + self.width > 0 && self.x < root.width
+                && self.y + self.height > root.ruler-height && self.y < root.height)
+                || entry.id == root.pressed-id;
 
             item: entry;
             px-per-second: root.px-per-second;
@@ -1483,6 +1493,7 @@ export component Lanes inherits Rectangle {
                 root.drag-seconds = 0;
                 root.drag-pixels = 0;
                 root.clip-dragging = false;
+                root.pressed-id = entry.id;
                 root.clip-pressed(entry.id, additive, edge);
             }
             split-at(x) => {
@@ -1501,6 +1512,7 @@ export component Lanes inherits Rectangle {
             pointer-at(x) => { root.pointer-x = self.x + x; }
             released => {
                 root.clip-dragging = false;
+                root.pressed-id = "";
                 root.clip-released();
             }
             // The press above already selected the clip; a click is not a
