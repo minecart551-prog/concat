@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Kesme aracı ({0}): bir klibe tıklayınca orada keser",
   "tray.stopRecording": "Kaydı durdur",
   "tray.textToSpeech": "Metinden konuşmaya",
+  "tray.turnOffFilmstrip": "Film şeritlerini kapat",
+  "tray.turnOnFilmstrip": "Film şeritlerini aç",
   "tray.turnOffPreviewAxis": "Önizleme eksenini kapat ({0})",
   "tray.turnOnPreviewAxis": "Önizleme eksenini aç ({0})",
   "tray.undo": "Geri al ({0})",

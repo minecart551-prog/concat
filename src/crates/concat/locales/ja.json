@@ -1032,6 +1032,8 @@
   "tray.splitTool": "分割ツール ({0}): クリップをクリックした位置で切る",
   "tray.stopRecording": "録音を停止",
   "tray.textToSpeech": "テキスト読み上げ",
+  "tray.turnOffFilmstrip": "フィルムストリップをオフにする",
+  "tray.turnOnFilmstrip": "フィルムストリップをオンにする",
   "tray.turnOffPreviewAxis": "プレビュー軸をオフにする ({0})",
   "tray.turnOnPreviewAxis": "プレビュー軸をオンにする ({0})",
   "tray.undo": "元に戻す ({0})",

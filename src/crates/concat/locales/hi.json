@@ -1032,6 +1032,8 @@
   "tray.splitTool": "स्प्लिट टूल ({0}): किसी क्लिप को वहीं काटने के लिए उस पर क्लिक करें",
   "tray.stopRecording": "रिकॉर्डिंग रोकें",
   "tray.textToSpeech": "टेक्स्ट से आवाज़",
+  "tray.turnOffFilmstrip": "फ़िल्मस्ट्रिप बंद करें",
+  "tray.turnOnFilmstrip": "फ़िल्मस्ट्रिप चालू करें",
   "tray.turnOffPreviewAxis": "प्रीव्यू अक्ष बंद करें ({0})",
   "tray.turnOnPreviewAxis": "प्रीव्यू अक्ष चालू करें ({0})",
   "tray.undo": "पहले जैसा करें ({0})",

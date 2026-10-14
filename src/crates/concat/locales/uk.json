@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Інструмент розрізання ({0}): клацніть кліп, щоб розрізати його в цьому місці",
   "tray.stopRecording": "Зупинити запис",
   "tray.textToSpeech": "Синтез мовлення",
+  "tray.turnOffFilmstrip": "Вимкнути кіноплівку",
+  "tray.turnOnFilmstrip": "Увімкнути кіноплівку",
   "tray.turnOffPreviewAxis": "Вимкнути вісь перегляду ({0})",
   "tray.turnOnPreviewAxis": "Увімкнути вісь перегляду ({0})",
   "tray.undo": "Скасувати ({0})",

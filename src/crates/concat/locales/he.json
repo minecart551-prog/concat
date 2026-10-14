@@ -1032,6 +1032,8 @@
   "tray.splitTool": "כלי פיצול ({0}): לחיצה על קליפ חותכת אותו שם",
   "tray.stopRecording": "עצירת ההקלטה",
   "tray.textToSpeech": "המרת טקסט לדיבור",
+  "tray.turnOffFilmstrip": "כיבוי רצועות הסרט",
+  "tray.turnOnFilmstrip": "הפעלת רצועות הסרט",
   "tray.turnOffPreviewAxis": "כיבוי ציר התצוגה המקדימה ({0})",
   "tray.turnOnPreviewAxis": "הפעלת ציר התצוגה המקדימה ({0})",
   "tray.undo": "ביטול פעולה ({0})",

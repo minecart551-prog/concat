@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Alat pisah ({0}): klik klip untuk memotongnya di titik itu",
   "tray.stopRecording": "Hentikan Rekaman",
   "tray.textToSpeech": "Teks ke Ucapan",
+  "tray.turnOffFilmstrip": "Matikan filmstrip",
+  "tray.turnOnFilmstrip": "Nyalakan filmstrip",
   "tray.turnOffPreviewAxis": "Matikan Sumbu Pratinjau ({0})",
   "tray.turnOnPreviewAxis": "Nyalakan Sumbu Pratinjau ({0})",
   "tray.undo": "Urungkan ({0})",

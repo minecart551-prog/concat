@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Split tool ({0}): click a clip to cut it there",
   "tray.stopRecording": "Stop Recording",
   "tray.textToSpeech": "Text to Speech",
+  "tray.turnOffFilmstrip": "Turn off filmstrips",
+  "tray.turnOnFilmstrip": "Turn on filmstrips",
   "tray.turnOffPreviewAxis": "Turn off Preview Axis ({0})",
   "tray.turnOnPreviewAxis": "Turn on Preview Axis ({0})",
   "tray.undo": "Undo ({0})",

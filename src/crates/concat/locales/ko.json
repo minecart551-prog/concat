@@ -1032,6 +1032,8 @@
   "tray.splitTool": "자르기 도구 ({0}): 클립을 클릭한 곳에서 자릅니다",
   "tray.stopRecording": "녹음 중지",
   "tray.textToSpeech": "텍스트 음성 변환",
+  "tray.turnOffFilmstrip": "필름스트립 끄기",
+  "tray.turnOnFilmstrip": "필름스트립 켜기",
   "tray.turnOffPreviewAxis": "미리보기 축 끄기 ({0})",
   "tray.turnOnPreviewAxis": "미리보기 축 켜기 ({0})",
   "tray.undo": "실행 취소 ({0})",

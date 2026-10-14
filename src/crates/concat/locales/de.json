@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Schneidewerkzeug ({0}): Klick auf einen Clip schneidet ihn dort",
   "tray.stopRecording": "Aufnahme beenden",
   "tray.textToSpeech": "Text zu Sprache",
+  "tray.turnOffFilmstrip": "Filmstreifen ausschalten",
+  "tray.turnOnFilmstrip": "Filmstreifen einschalten",
   "tray.turnOffPreviewAxis": "Vorschauachse ausschalten ({0})",
   "tray.turnOnPreviewAxis": "Vorschauachse einschalten ({0})",
   "tray.undo": "Rückgängig ({0})",

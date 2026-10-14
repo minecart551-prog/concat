@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Công cụ tách ({0}): nhấp vào clip để cắt tại vị trí đó",
   "tray.stopRecording": "Dừng ghi âm",
   "tray.textToSpeech": "Chuyển văn bản thành giọng nói",
+  "tray.turnOffFilmstrip": "Tắt dải phim",
+  "tray.turnOnFilmstrip": "Bật dải phim",
   "tray.turnOffPreviewAxis": "Tắt trục xem trước ({0})",
   "tray.turnOnPreviewAxis": "Bật trục xem trước ({0})",
   "tray.undo": "Hoàn tác ({0})",

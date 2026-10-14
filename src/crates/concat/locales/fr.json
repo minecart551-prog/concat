@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Outil de coupe ({0}) : cliquez sur un clip pour le couper là",
   "tray.stopRecording": "Arrêter l'enregistrement",
   "tray.textToSpeech": "Synthèse vocale",
+  "tray.turnOffFilmstrip": "Désactiver les bandes de film",
+  "tray.turnOnFilmstrip": "Activer les bandes de film",
   "tray.turnOffPreviewAxis": "Désactiver l'axe d'aperçu ({0})",
   "tray.turnOnPreviewAxis": "Activer l'axe d'aperçu ({0})",
   "tray.undo": "Annuler ({0})",

@@ -62,6 +62,13 @@ pub struct Preferences {
     /// default: a burst of sound on every pass of the pointer is a lot to
     /// ask of a room.
     pub preview_axis_audio: bool,
+    /// The lanes' filmstrips: a picture clip shows frames along its body.
+    /// On by default, and the tray's button by the preview axis puts them
+    /// down for a cut too busy to afford them. A thumbnail per clip is the
+    /// lanes' most expensive thing by a wide margin, and a hundred clips
+    /// in view pay it on every frame.
+    #[serde(default = "filmstrips_on")]
+    pub filmstrip: bool,
     /// Where model downloads look first: a `SourcePreference` by name.
     /// Absent is automatic.
     pub download_source: Option<String>,
@@ -147,13 +154,23 @@ impl Default for ServerPrefs {
 /// the port `concat-cli serve` uses too.
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
 
+/// A preference that is on unless it was turned off, so a file written
+/// before it existed still has it.
+fn filmstrips_on() -> bool {
+    true
+}
+
 impl Preferences {
-    /// Reads the file, or the defaults when there is none.
+    /// Reads the file, or the defaults when there is none. The fallback
+    /// goes through serde rather than `Default::default()`, so a
+    /// preference that is on unless turned off - the lanes' filmstrips -
+    /// starts on whether the file was missing, unreadable, or simply
+    /// written before it existed.
     pub fn load(dirs: &AppDirs) -> Self {
         std::fs::read(dirs.config.join(FILE))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_else(|| serde_json::from_str("{}").unwrap_or_default())
     }
 
     /// Writes the file. Best effort: a preference that did not stick is

@@ -8029,6 +8029,7 @@ impl Studio {
         editor.set_trim_follow(self.prefs.trim_follow);
         editor.set_preview_axis(self.prefs.preview_axis);
         editor.set_preview_axis_audio(self.prefs.preview_axis_audio);
+        editor.set_filmstrip(self.prefs.filmstrip);
         editor.set_pan_mode(self.lanes.pan_mode);
         editor.set_selected_count(self.selection.len() as i32);
         // The tray's undo and redo buttons grey out on these; the Edit menu

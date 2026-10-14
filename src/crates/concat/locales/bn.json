@@ -1032,6 +1032,8 @@
   "tray.splitTool": "বিভক্তকরণ টুল ({0}): সেখানে কাটতে একটি ক্লিপে ক্লিক করুন",
   "tray.stopRecording": "রেকর্ডিং বন্ধ করুন",
   "tray.textToSpeech": "টেক্সট টু স্পিচ",
+  "tray.turnOffFilmstrip": "ফিল্মস্ট্রিপ বন্ধ করুন",
+  "tray.turnOnFilmstrip": "ফিল্মস্ট্রিপ চালু করুন",
   "tray.turnOffPreviewAxis": "প্রিভিউ অক্ষ বন্ধ করুন ({0})",
   "tray.turnOnPreviewAxis": "প্রিভিউ অক্ষ চালু করুন ({0})",
   "tray.undo": "আনডু ({0})",

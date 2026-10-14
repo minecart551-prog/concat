@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Narzędzie podziału ({0}): kliknij klip, aby go tam przeciąć",
   "tray.stopRecording": "Zatrzymaj nagrywanie",
   "tray.textToSpeech": "Zamiana tekstu na mowę",
+  "tray.turnOffFilmstrip": "Wyłącz paski filmowe",
+  "tray.turnOnFilmstrip": "Włącz paski filmowe",
   "tray.turnOffPreviewAxis": "Wyłącz oś podglądu ({0})",
   "tray.turnOnPreviewAxis": "Włącz oś podglądu ({0})",
   "tray.undo": "Cofnij ({0})",

@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Splitsgereedschap ({0}): klik op een clip om hem daar te knippen",
   "tray.stopRecording": "Opname stoppen",
   "tray.textToSpeech": "Tekst naar spraak",
+  "tray.turnOffFilmstrip": "Filmstroken uitschakelen",
+  "tray.turnOnFilmstrip": "Filmstroken inschakelen",
   "tray.turnOffPreviewAxis": "Voorvertoningsas uitschakelen ({0})",
   "tray.turnOnPreviewAxis": "Voorvertoningsas inschakelen ({0})",
   "tray.undo": "Ongedaan maken ({0})",

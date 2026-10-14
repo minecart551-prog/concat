@@ -1032,6 +1032,8 @@
   "tray.splitTool": "ابزار برش ({0}): روی کلیپ کلیک کنید تا همان‌جا بریده شود",
   "tray.stopRecording": "توقف ضبط",
   "tray.textToSpeech": "تبدیل متن به گفتار",
+  "tray.turnOffFilmstrip": "خاموش کردن نوار فیلم",
+  "tray.turnOnFilmstrip": "روشن کردن نوار فیلم",
   "tray.turnOffPreviewAxis": "خاموش کردن محور پیش‌نمایش ({0})",
   "tray.turnOnPreviewAxis": "روشن کردن محور پیش‌نمایش ({0})",
   "tray.undo": "واگرد ({0})",

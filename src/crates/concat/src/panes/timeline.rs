@@ -69,6 +69,9 @@ pub enum TimelineMsg {
     PreviewAxisChanged(bool),
     /// The button's menu: whether the sound under the pointer plays too.
     PreviewAxisAudioChanged(bool),
+    /// The tray's filmstrip button: whether the lanes draw clips' frames.
+    /// A preference, remembered.
+    FilmstripChanged(bool),
     /// The pointer is over the lanes at this many seconds.
     Hovered(f32),
     /// The pointer left the lanes.
@@ -159,6 +162,10 @@ impl TimelinePane {
             }
             TimelineMsg::PreviewAxisAudioChanged(on) => {
                 studio.prefs.preview_axis_audio = on;
+                studio.prefs.save(&studio.host.dirs);
+            }
+            TimelineMsg::FilmstripChanged(on) => {
+                studio.prefs.filmstrip = on;
                 studio.prefs.save(&studio.host.dirs);
             }
             TimelineMsg::Hovered(seconds) => studio.hover(seconds),

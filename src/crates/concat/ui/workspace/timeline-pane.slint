@@ -42,6 +42,7 @@ export component TimelinePane inherits Rectangle {
     in property <bool> trim-follow: false;
     in property <bool> preview-axis: false;
     in property <bool> preview-axis-audio;
+    in property <bool> filmstrip: true;
     in property <int> selected-count;
     in property <bool> transition-selected;
     in property <bool> can-undo;
@@ -62,6 +63,7 @@ export component TimelinePane inherits Rectangle {
     callback trim-follow-changed(on: bool);
     callback preview-axis-changed(on: bool);
     callback preview-axis-audio-changed(on: bool);
+    callback filmstrip-changed(on: bool);
     /// The preview axis: the pointer over the lanes, and then not.
     callback hovered(seconds: float);
     callback hover-ended();
@@ -319,6 +321,7 @@ export component TimelinePane inherits Rectangle {
             pan-mode: root.pan-mode;
             trim-follow: root.trim-follow;
             preview-axis: root.preview-axis;
+            filmstrip: root.filmstrip;
             selected-count: root.selected-count;
             transition-selected: root.transition-selected;
             can-undo: root.can-undo;
@@ -337,6 +340,7 @@ export component TimelinePane inherits Rectangle {
             pan-changed(on) => { root.pan-changed(on); }
             trim-follow-changed(on) => { root.trim-follow-changed(on); }
             preview-axis-changed(on) => { root.preview-axis-changed(on); }
+            filmstrip-changed(on) => { root.filmstrip-changed(on); }
             axis-menu-requested(x) => {
                 // Under the button, in the pane's own coordinates: the tray
                 // sits some rows down the pane, and the menu element is the
@@ -430,6 +434,7 @@ export component TimelinePane inherits Rectangle {
                 ruler-height: root.ruler-height;
                 pan-mode: root.pan-mode;
                 preview-axis: root.preview-axis;
+                filmstrip: root.filmstrip;
 
                 scrubbed(seconds) => { root.scrubbed(seconds); }
                 key-mark-moved(from, to) => { root.key-mark-moved(from, to); }

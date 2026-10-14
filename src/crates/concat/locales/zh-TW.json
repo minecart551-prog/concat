@@ -1032,6 +1032,8 @@
   "tray.splitTool": "分割工具（{0}）：點擊片段即在該處切開",
   "tray.stopRecording": "停止錄製",
   "tray.textToSpeech": "文字轉語音",
+  "tray.turnOffFilmstrip": "關閉膠片條",
+  "tray.turnOnFilmstrip": "打開膠片條",
   "tray.turnOffPreviewAxis": "關閉預覽座標軸 ({0})",
   "tray.turnOnPreviewAxis": "打開預覽座標軸 ({0})",
   "tray.undo": "復原 ({0})",

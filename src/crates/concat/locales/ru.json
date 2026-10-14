@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Инструмент разрезания ({0}): щелчок по клипу режет его в этом месте",
   "tray.stopRecording": "Остановить запись",
   "tray.textToSpeech": "Озвучить текст",
+  "tray.turnOffFilmstrip": "Выключить киноплёнку",
+  "tray.turnOnFilmstrip": "Включить киноплёнку",
   "tray.turnOffPreviewAxis": "Выключить ось предпросмотра ({0})",
   "tray.turnOnPreviewAxis": "Включить ось предпросмотра ({0})",
   "tray.undo": "Отменить ({0})",

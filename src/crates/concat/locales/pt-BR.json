@@ -1032,6 +1032,8 @@
   "tray.splitTool": "Ferramenta de corte ({0}): clique em um clipe para cortá-lo ali",
   "tray.stopRecording": "Parar gravação",
   "tray.textToSpeech": "Texto para fala",
+  "tray.turnOffFilmstrip": "Desligar as tiras de filme",
+  "tray.turnOnFilmstrip": "Ligar as tiras de filme",
   "tray.turnOffPreviewAxis": "Desligar o eixo de prévia ({0})",
   "tray.turnOnPreviewAxis": "Ligar o eixo de prévia ({0})",
   "tray.undo": "Desfazer ({0})",

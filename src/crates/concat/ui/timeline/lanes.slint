@@ -192,6 +192,26 @@ component Clip inherits Rectangle {
         : 0px;
     /// What the frames get: the body less the band.
     property <length> frames-h: Math.max(0px, root.body-h - root.band-h);
+
+    /// Whether the lanes draw filmstrips at all; the tray's toggle, so a
+    /// busy cut can trade its thumbnails for headroom.
+    in property <bool> filmstrip: true;
+    /// The filmstrip's tile at this lane's height: one frame, as wide as
+    /// the frame is tall. It lives up here rather than on the filmstrip
+    /// itself because the gate below has to be answered before the
+    /// filmstrip exists.
+    property <length> strip-tile-w: Math.max(4px,
+        (root.banded ? root.frames-h : root.body-h) * root.item.strip.frame-width
+        / Math.max(1, root.item.strip.height));
+    /// Whether the filmstrip is drawn. Below a third of a tile a clip
+    /// would show a sliver of one frame - too little to tell one picture
+    /// from another, and still a draw of its own on every frame for every
+    /// clip in view. That sliver was most of what a lanes full of clips
+    /// cost, so it is gone; the clip keeps its well and its sound band.
+    property <bool> show-strip: root.filmstrip
+        && root.item.strip.frames > 0
+        && root.width > 0px
+        && root.width >= root.strip-tile-w / 3;
     /// A fade on a picture clip is shaded in a band at the foot instead of
     /// over the whole body: the fade is an *audio* property, and shading the
     /// picture would say it fades to black. Sound shades its whole body; a
@@ -304,15 +324,14 @@ component Clip inherits Rectangle {
         // Drawn at any width. A clip narrower than a tile shows the left
         // of one frame, cut where the clip ends - a sliver of the picture
         // is still the picture, and the well it would leave showing is not.
-        if root.item.strip.frames > 0 && root.width > 0px: Rectangle {
+        if root.show-strip: Rectangle {
             x: 0;
             y: 0;
             width: parent.width;
             height: root.banded ? root.frames-h : parent.height;
             clip: true;
 
-            property <length> tile-w: Math.max(4px,
-                self.height * root.item.strip.frame-width / Math.max(1, root.item.strip.height));
+            property <length> tile-w: root.strip-tile-w;
 
             // Window tiles to the visible screen area so zooming in never leaves
             // all tiles off-screen to the left (fixes #156):
@@ -1047,6 +1066,10 @@ export component Lanes inherits Rectangle {
     /// and the monitor shows the frame under it. Off, the lanes say nothing
     /// about where the pointer is.
     in property <bool> preview-axis: false;
+    /// Whether the lanes draw filmstrips. The tray's button; see
+    /// `Editor.filmstrip`. Off, a picture clip keeps its well and its
+    /// sound band, which is what it shows before its strip arrives.
+    in property <bool> filmstrip: true;
     /// The zoom: seconds covered by one pixel.
     in property <float> seconds-per-pixel: 0.05;
     in property <length> track-scroll;
@@ -1443,6 +1466,7 @@ export component Lanes inherits Rectangle {
             viewport-width: parent.width;
             tool: root.tool;
             edge-grab: root.edge-grab;
+            filmstrip: root.filmstrip;
             // Read back through the lane the clip sits on rather than carried
             // on the clip: locking is a property of the lane, and copying it
             // onto every clip would be one more thing to keep in step.
