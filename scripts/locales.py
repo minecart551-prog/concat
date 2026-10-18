@@ -18,6 +18,10 @@ string belongs to (`common` for one used all over), then a name for it.
 Every string a person reads passes through `I18n.t("key")` (or `t1`, `t2`,
 `upper`) in the .slint tree, or `t("key")` / `tf("key", ...)` in the window's
 Rust. Those keys' English is written in en.json by whoever adds the string.
+A table whose rows are each shown through `t(row.key)` - the speech Styles
+in panes/speech.rs - names its keys in the table itself, and those count
+too: the call is only ever handed a value, so the entry is the one place
+the key is written down.
 Effects, filters, transitions and text presets are data, not interface:
 their words are always the English their manifests write, and have no
 lines here.
@@ -56,6 +60,10 @@ DOCS = ROOT / "docs"
 LITERAL = r'"((?:[^"\\]|\\.)*)"'
 SLINT_CALL = re.compile(r"I18n\.(?:t[12]?|upper)\(\s*" + LITERAL)
 RUST_CALL = re.compile(r"(?<![A-Za-z_])(?:i18n::)?tf?\(\s*" + LITERAL)
+# A data table's own key - `key: "voices.styleGiant"` in speech.rs's
+# STYLES, whose rows are shown through `t(row.key)` - which no call
+# writes out loud.
+RUST_KEY = re.compile(r"\bkey:\s*" + LITERAL)
 KEY = re.compile(r"^[a-z][A-Za-z0-9]*(\.[a-z][A-Za-z0-9]*)+$")
 # One entry of i18n.rs's BUILT_IN: `("pt-BR", include_str!("../locales/pt-BR.json")),`.
 BUILT_IN_ENTRY = re.compile(r'\(\s*"([^"]+)",\s*include_str!\("\.\./locales/([^"]+)\.json"\)\s*\)')
@@ -106,7 +114,9 @@ def code_keys() -> set[str]:
             continue
         out.update(unescape(m.group(1)) for m in SLINT_CALL.finditer(live(path.read_text(encoding="utf-8"), False)))
     for path in (CRATE / "src").rglob("*.rs"):
-        out.update(unescape(m.group(1)) for m in RUST_CALL.finditer(live(path.read_text(encoding="utf-8"), True)))
+        text = live(path.read_text(encoding="utf-8"), True)
+        out.update(unescape(m.group(1)) for m in RUST_CALL.finditer(text))
+        out.update(unescape(m.group(1)) for m in RUST_KEY.finditer(text))
     # A literal that is only a place to fill - `I18n.t1("{0}", ...)` - is
     # passed through and is not a string to translate.
     return {key for key in out if key.strip("{}0123456789 ")}

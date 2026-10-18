@@ -243,7 +243,11 @@ pub(super) fn apply(
             let track_id = match track_id {
                 Some(id) if timeline.track(&id).is_some() => id,
                 Some(_) => return Err(CommandError::TrackGone),
-                None => first_free_track(timeline, start, duration)
+                // Over the picture, as a title is: a layer treats what is
+                // beneath it, and the bottom-first walk put one under the
+                // footage whenever a lower lane was free, where it treated
+                // nothing.
+                None => first_free_track_above(timeline, start, duration)
                     .unwrap_or_else(|| fresh_track(timeline, mint)),
             };
             let start = timeline.nearest_free_start(&track_id, start, duration, &[]);

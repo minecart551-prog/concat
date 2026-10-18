@@ -20,6 +20,7 @@ import { Theme } from "theme/theme.slint";
 import { Bezier, Curves, Fmt, Focus, Payload } from "util.slint";
 import { EffectData } from "demo/effects-panel.slint";
 import { MediaFilter, MediaItemData, MediaKind, SourcePreview, TextPresetData } from "workspace/media-pane.slint";
+import { SoundCardData, Sounds, VoiceCardData } from "workspace/audio-page.slint";
 import { ContextMenu, MenuItemData, MenuRow } from "primitives/context-menu.slint";
 import { ExportData, ExportDialog, ExportPhase } from "dialogs/export.slint";
 import { ModelData, SettingsData, SettingsDialog, SystemFactData } from "dialogs/settings.slint";
@@ -28,6 +29,7 @@ import { RelinkDialog, RelinkData, MissingMediaItem } from "dialogs/relink.slint
 import { ConfirmData, ConfirmDialog } from "dialogs/confirm.slint";
 import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
+import { AvatarData } from "primitives/avatar.slint";
 import { VoiceoverData, VoiceoverPanel } from "dialogs/voiceover.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor } from "editor.slint";
@@ -64,7 +66,7 @@ export {
     SelectedClipData, SelectedTransitionData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     ChipOption, RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
-    CaptionsSheetData, SpeechSheetData, VoiceoverData,
+    CaptionsSheetData, SpeechSheetData, VoiceoverData, SoundCardData, Sounds, VoiceCardData,
 }
 
 export component App inherits Window {
@@ -166,7 +168,19 @@ export component App inherits Window {
     callback start-open();
     callback start-open-recent(path: string);
     callback start-forget-recent(path: string);
+    callback start-reveal-recent(path: string);
+    callback start-search-edited(query: string);
+    callback start-sort-changed(sort: int);
+    /// One of the launch screen's links, by name; see `start::link`.
+    callback start-link(name: string);
     callback start-dismiss-error();
+    /// How many projects the recents list holds, before the search: the
+    /// grid's search and sort come up past a page of them.
+    in property <int> recents-total;
+    /// "0.2.7", for the launch screen's version line.
+    in property <string> app-version;
+    /// A file can be dragged in from the system: a desk, not a phone.
+    in property <bool> can-drop;
 
     // Title bar. The drag/maximize pair must be handled in main.rs — a window
     // cannot drag itself from inside the scene graph; the rest are seams like
@@ -330,6 +344,8 @@ export component App inherits Window {
     in property <[string]> speech-model-details;
     in property <[string]> speech-voices;
     in property <[string]> speech-voice-details;
+    /// Each voice's avatar; see Avatar.
+    in property <[AvatarData]> speech-voice-avatars;
     /// The recordings in the bin a voice can be taken from: their names,
     /// their waveforms as path commands, and their lengths.
     in property <[string]> speech-samples;
@@ -349,6 +365,10 @@ export component App inherits Window {
     pure callback speech-insert-tag(text: string, tag: string, at: int) -> string;
     callback speech-begin();
     callback speech-cancel();
+    callback speech-save-name-edited(name: string);
+    callback speech-pick-picture();
+    callback speech-save-voice();
+    callback speech-clear-style();
 
     /// The voiceover panel; see VoiceoverPanel. Its meter and clock come
     /// on the Editor global, from a timer.
@@ -591,14 +611,23 @@ export component App inherits Window {
                 vertical-stretch: 1;
 
                 recents: root.recents;
+                recents-total: root.recents-total;
+                query: root.start.query;
+                sort: root.start.sort;
                 busy: root.start.busy;
                 phone: root.phone;
+                version: root.app-version;
+                can-drop: root.can-drop;
 
                 compose => { root.start-compose(); }
                 open => { root.start-open(); }
                 open-settings => { root.open-settings(); }
                 open-recent(path) => { root.start-open-recent(path); }
                 forget-recent(path) => { root.start-forget-recent(path); }
+                reveal-recent(path) => { root.start-reveal-recent(path); }
+                search-edited(query) => { root.start-search-edited(query); }
+                sort-changed(sort) => { root.start-sort-changed(sort); }
+                link(name) => { root.start-link(name); }
             }
 
             // Everything the workspace shows now reads the Editor global, so
@@ -742,6 +771,7 @@ export component App inherits Window {
             model-details: root.speech-model-details;
             voices: root.speech-voices;
             voice-details: root.speech-voice-details;
+            voice-avatars: root.speech-voice-avatars;
             samples: root.speech-samples;
             sample-waves: root.speech-sample-waves;
             sample-details: root.speech-sample-details;
@@ -759,6 +789,10 @@ export component App inherits Window {
             insert-tag(text, tag, at) => { return root.speech-insert-tag(text, tag, at); }
             begin => { root.speech-begin(); }
             cancel => { root.speech-cancel(); }
+            save-name-edited(name) => { root.speech-save-name-edited(name); }
+            pick-picture => { root.speech-pick-picture(); }
+            save-voice => { root.speech-save-voice(); }
+            clear-style => { root.speech-clear-style(); }
         }
     }
 

@@ -2592,7 +2592,7 @@ mod tests {
         document["futureSetting"] = json!({ "on": true });
         document["timelines"][0]["colourSpace"] = json!("rec709");
         document["timelines"][0]["tracks"][0]["name"] = json!("Dialogue");
-        document["timelines"][0]["clips"][0]["mask"] = json!({ "shape": "ellipse" });
+        document["timelines"][0]["clips"][0]["motionTrack"] = json!({ "shape": "ellipse" });
         document["media"][0]["proxy"] = json!("/proxies/a.mp4");
 
         let loaded = Editor::from_document(&document).expect("loads");
@@ -2602,7 +2602,7 @@ mod tests {
                 .active()
                 .clip(&clip_id)
                 .expect("clip")
-                .extra["mask"]["shape"],
+                .extra["motionTrack"]["shape"],
             "ellipse"
         );
         let saved = loaded.to_document(&settings());
@@ -2610,13 +2610,13 @@ mod tests {
         assert_eq!(saved["timelines"][0]["colourSpace"], "rec709");
         assert_eq!(saved["timelines"][0]["tracks"][0]["name"], "Dialogue");
         assert_eq!(
-            saved["timelines"][0]["clips"][0]["mask"]["shape"],
+            saved["timelines"][0]["clips"][0]["motionTrack"]["shape"],
             "ellipse"
         );
         assert_eq!(saved["media"][0]["proxy"], "/proxies/a.mp4");
         // The flat mirror carries the clip's unknown field too: it is the
         // same clip serialised twice.
-        assert_eq!(saved["clips"][0]["mask"]["shape"], "ellipse");
+        assert_eq!(saved["clips"][0]["motionTrack"]["shape"], "ellipse");
         // And the writer's own fields are never duplicated from `extra`.
         assert_eq!(
             loaded.project().extra.len(),
@@ -3317,6 +3317,148 @@ mod tests {
         assert_eq!(restored.project(), editor.project());
     }
 
+    /// A clip's mask is an edit like any other: put on and taken off by a
+    /// patch, held to its ranges, its numbers keyed, and every bit of it
+    /// saved and read back as it was.
+    #[test]
+    fn a_mask_and_its_keys_round_trip() {
+        use crate::model::{ClipMask, KeyEase, KeyProperty, MaskShape};
+        let (mut editor, _, clip_id) = fixture();
+        let mask = ClipMask {
+            roundness: 0.4,
+            feather: 0.25,
+            invert: true,
+            rotation: 30.0,
+            // Past its range: held to it on the way in.
+            width: 9.0,
+            ..ClipMask::of(MaskShape::Rectangle)
+        };
+        editor
+            .apply(Command::UpdateClip {
+                clip_id: clip_id.clone(),
+                patch: ClipPatch {
+                    mask: Some(Some(mask)),
+                    ..ClipPatch::default()
+                },
+            })
+            .expect("masks");
+        for (at, value) in [(0.0, -0.3), (1.0, 0.3)] {
+            editor
+                .apply(Command::SetClipKey {
+                    clip_id: clip_id.clone(),
+                    property: KeyProperty::MaskX,
+                    at,
+                    value,
+                    ease: KeyEase::LINEAR,
+                })
+                .expect("keys");
+        }
+        // A key past the feather's range is held to it, as the field is.
+        editor
+            .apply(Command::SetClipKey {
+                clip_id: clip_id.clone(),
+                property: KeyProperty::MaskFeather,
+                at: 0.5,
+                value: 7.0,
+                ease: KeyEase::LINEAR,
+            })
+            .expect("keys");
+        let clip = editor.project().active().clip(&clip_id).expect("clip");
+        let held = clip.mask.expect("a mask");
+        assert_eq!(held.width, ClipMask::MAX_SIZE);
+        assert_eq!(held.shape, MaskShape::Rectangle);
+        assert!((clip.value_at(KeyProperty::MaskX, 0.5)).abs() < 1e-12);
+        assert!((clip.value_at(KeyProperty::MaskX, 0.75) - 0.15).abs() < 1e-12);
+        assert_eq!(clip.value_at(KeyProperty::MaskFeather, 0.5), 1.0);
+        // An unkeyed number is the mask's own.
+        assert_eq!(clip.value_at(KeyProperty::MaskRoundness, 0.5), 0.4);
+
+        let document = editor.to_document(&settings());
+        let written = &document["timelines"][0]["clips"][0];
+        assert_eq!(written["mask"]["shape"], "rectangle");
+        assert_eq!(written["mask"]["invert"], true);
+        assert!(
+            written["keys"]
+                .as_array()
+                .expect("keys")
+                .iter()
+                .any(|key| key["property"] == "maskX")
+        );
+        let restored = Editor::from_document(&document).expect("loads");
+        assert_eq!(restored.project(), editor.project());
+
+        // Null takes it off and leaves the rest of the clip alone.
+        editor
+            .apply(Command::UpdateClip {
+                clip_id: clip_id.clone(),
+                patch: ClipPatch {
+                    mask: Some(None),
+                    ..ClipPatch::default()
+                },
+            })
+            .expect("unmasks");
+        let clip = editor.project().active().clip(&clip_id).expect("clip");
+        assert!(clip.mask.is_none());
+        assert!(
+            !editor.to_document(&settings())["timelines"][0]["clips"][0]
+                .as_object()
+                .expect("a clip")
+                .contains_key("mask")
+        );
+    }
+
+    /// The wire spelling a caller of the API writes: camelCase numbers, a
+    /// lowercase shape, anything left out a new mask's, and a shape this
+    /// build has not heard of a circle rather than a failed clip.
+    #[test]
+    fn a_mask_reads_from_its_wire_spelling() {
+        use crate::model::{ClipMask, MaskShape};
+        let patch: ClipPatch =
+            serde_json::from_value(json!({ "mask": { "shape": "heart", "feather": 0.5 } }))
+                .expect("parses");
+        let mask = patch.mask.flatten().expect("a mask");
+        assert_eq!(mask.shape, MaskShape::Heart);
+        assert_eq!(mask.feather, 0.5);
+        assert_eq!(mask.width, ClipMask::of(MaskShape::Circle).width);
+        let odd: ClipMask =
+            serde_json::from_value(json!({ "shape": "blob", "x": 0.2 })).expect("parses");
+        assert_eq!((odd.shape, odd.x), (MaskShape::Circle, 0.2));
+        let cleared: ClipPatch = serde_json::from_value(json!({ "mask": null })).expect("parses");
+        assert_eq!(cleared.mask, Some(None));
+        let untouched: ClipPatch = serde_json::from_value(json!({})).expect("parses");
+        assert_eq!(untouched.mask, None);
+    }
+
+    /// A document from before masks opens with none, and one written by a
+    /// build whose mask this one cannot read opens without it rather than
+    /// without the clip.
+    #[test]
+    fn a_document_without_a_mask_opens_maskless() {
+        let (editor, _, clip_id) = fixture();
+        let mut document = editor.to_document(&settings());
+        let restored = Editor::from_document(&document).expect("loads");
+        assert!(
+            restored
+                .project()
+                .active()
+                .clip(&clip_id)
+                .expect("clip")
+                .mask
+                .is_none()
+        );
+        document["timelines"][0]["clips"][0]["mask"] = json!("not a mask");
+        let restored = Editor::from_document(&document).expect("loads");
+        assert!(
+            restored
+                .project()
+                .active()
+                .clip(&clip_id)
+                .expect("clip")
+                .mask
+                .is_none()
+        );
+    }
+
     #[test]
     fn a_version_one_document_loads() {
         // The shape of a version-1 document as it sits on disk, optional
@@ -3905,6 +4047,51 @@ mod tests {
         assert!(
             caption_row > video_row,
             "a caption must land above the video, not under it"
+        );
+    }
+
+    /// An adjustment layer laid at the playhead lands over the footage,
+    /// with the colour panel's package as its chain at its defaults: a
+    /// layer under the picture would treat nothing (#249).
+    #[test]
+    fn an_adjustment_layer_lands_above_the_picture() {
+        let mut editor = Editor::new();
+        let media_id = editor
+            .apply(media("/a.mp4", 10.0, true))
+            .expect("adds")
+            .created_id
+            .expect("id");
+        let video_track = editor.project().active().tracks[2].id.clone();
+        editor
+            .apply(Command::AddClip {
+                media_id,
+                track_id: video_track.clone(),
+                start: 0.0,
+                ripple: false,
+            })
+            .expect("adds");
+        let layer_id = editor
+            .apply(Command::AddLayerClip {
+                track_id: None,
+                start: 1.0,
+                duration: Some(3.0),
+                effect_id: "concat.adjust".into(),
+                name: "Adjustment".into(),
+            })
+            .expect("adds")
+            .created_id
+            .expect("id");
+        let timeline = editor.project().active();
+        let layer = timeline.clip(&layer_id).expect("exists");
+        assert_eq!(layer.kind, ClipKind::Layer);
+        assert_eq!(layer.name, "Adjustment");
+        assert_eq!(layer.video_effects.len(), 1);
+        assert_eq!(layer.video_effects[0].id, "concat.adjust");
+        assert!(layer.video_effects[0].params.is_empty(), "at its defaults");
+        let row = |id: &str| timeline.tracks.iter().position(|t| t.id == id);
+        assert!(
+            row(&layer.track_id) > row(&video_track),
+            "the layer must sit over the footage, not under it"
         );
     }
 

@@ -19,6 +19,7 @@ use serde_json::{Map, Value};
 
 /// What a piece of media is. A still is not a video with one frame: it has no
 /// intrinsic duration, so its length on a timeline is editorial.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind {
@@ -34,6 +35,7 @@ pub enum MediaKind {
 /// What made a media file, when it was the editor and not the user's
 /// import. The bin shelves such a file under Generated, by origin, and
 /// keeps it out of the import shelves.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaOrigin {
@@ -78,6 +80,7 @@ impl ClipKind {
 /// One audio stream of a media file, as the probe reported it. A screen
 /// recording keeps the desktop's sound and the microphone as two of these;
 /// a clip names the one it plays by `index`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioTrack {
@@ -108,6 +111,7 @@ pub struct AudioTrack {
 /// full crushes its shadows until it is read as `limited`. Set with
 /// `Command::SetMediaColorRange`; absent means the file's own tag is read.
 /// https://github.com/jub0t/Concat/issues/103
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ColorRange {
@@ -248,6 +252,7 @@ impl Default for Track {
 /// One applied audio filter or video effect: a catalogue id plus whatever
 /// parameters were set. The catalogues themselves (and the FFmpeg strings
 /// they build) live in the UI today; the model only stores the numbers.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedFilter {
@@ -278,6 +283,7 @@ fn yes() -> bool {
 }
 
 /// One key on one parameter of an applied effect; see `AppliedFilter::keys`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParamKey {
@@ -428,6 +434,7 @@ impl AppliedFilter {
 /// How a picture's background is taken away when there is no key colour
 /// to remove: a person mask found by the cutout model, alone or corrected
 /// by hand.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cutout {
@@ -445,6 +452,7 @@ pub struct Cutout {
 }
 
 /// The two ways a cutout decides what stays.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CutoutMode {
@@ -457,6 +465,7 @@ pub enum CutoutMode {
 /// What a cutout keeps: the person the matting model finds, the one
 /// thing the picture is of whatever it is, or whichever of those the
 /// analysis decides fits the footage.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Subject {
@@ -488,6 +497,7 @@ impl Subject {
 /// One brush stroke over a cutout: which tool, how wide, and where it went.
 /// Points are fractions of the source picture, `(0, 0)` its top-left, so a
 /// stroke survives a change of output size, a crop or a flip.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stroke {
@@ -505,6 +515,7 @@ pub struct Stroke {
 }
 
 /// The four brushes of a custom cutout.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BrushTool {
@@ -586,6 +597,7 @@ impl Stroke {
 /// analysis and cached in the project folder beside the masks; these are
 /// the settings the smooth path and the correction are worked out from,
 /// live, whenever they change. Off is no `Stabilize` at all.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Stabilize {
@@ -648,6 +660,7 @@ impl Stabilize {
 }
 
 /// A crop: what is taken off each edge, as fractions of the source.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Crop {
@@ -695,6 +708,7 @@ impl Crop {
 /// A timeline carries one ([`Timeline::background`]) and a clip may carry
 /// its own over it ([`Clip::background`]); which clips have one at all is
 /// [`Timeline::background_of`]'s to say.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -776,6 +790,7 @@ fn rgb_of(hex: &str) -> Option<[u8; 3]> {
 }
 
 /// The two ways a picture can be sized to the frame in one go.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Framing {
@@ -820,13 +835,217 @@ pub fn framing_scale(
     Some(scale.clamp(ranges::MIN_SCALE, ranges::MAX_SCALE))
 }
 
+/// Which shape a clip's mask keeps. The names are written into project
+/// files, so they are stable for ever.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MaskShape {
+    /// The part of the picture on one side of a line through the centre.
+    Linear,
+    /// A band along a line through the centre: the line mirrored.
+    Mirror,
+    /// An ellipse; a circle when its box is square. The default, and what
+    /// the reader falls back to.
+    #[default]
+    Circle,
+    /// A box, its corners rounded by the mask's `roundness`.
+    Rectangle,
+    /// A heart, point down.
+    Heart,
+    /// A five-pointed star, point up.
+    Star,
+}
+
+impl MaskShape {
+    /// Every shape, in the order the pickers list them.
+    pub const ALL: [MaskShape; 6] = [
+        MaskShape::Linear,
+        MaskShape::Mirror,
+        MaskShape::Circle,
+        MaskShape::Rectangle,
+        MaskShape::Heart,
+        MaskShape::Star,
+    ];
+
+    /// The engine's shape.
+    pub fn engine(self) -> concat_core::mask::MaskShape {
+        use concat_core::mask::MaskShape as Engine;
+        match self {
+            MaskShape::Linear => Engine::Linear,
+            MaskShape::Mirror => Engine::Mirror,
+            MaskShape::Circle => Engine::Circle,
+            MaskShape::Rectangle => Engine::Rectangle,
+            MaskShape::Heart => Engine::Heart,
+            MaskShape::Star => Engine::Star,
+        }
+    }
+}
+
+/// A shape that keeps part of a clip's picture: CapCut's Mask. Drawn over
+/// the picture as it is seen - after the crop and the flips, before the
+/// placement - so it moves, scales and turns with the clip, and multiplies
+/// with the cutout's matte and everything else that weighs the picture.
+///
+/// Its numbers other than the shape and the invert can be keyed, as the
+/// placement's can (`KeyProperty::MaskX` and on); a keyed number's keys
+/// replace the constant here.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClipMask {
+    /// What it keeps.
+    #[serde(deserialize_with = "wire::mask_shape")]
+    pub shape: MaskShape,
+    /// The centre's offset from the picture's centre, as a fraction of the
+    /// picture's width; positive is right.
+    pub x: f64,
+    /// The same down the picture's height; positive is down.
+    pub y: f64,
+    /// The box's width, as a fraction of the picture's shorter side - the
+    /// unit that keeps a circle round on any aspect.
+    pub width: f64,
+    /// The box's height, on the same terms; a mirror's thickness.
+    pub height: f64,
+    /// Clockwise degrees about the mask's centre.
+    pub rotation: f64,
+    /// How round a rectangle's corners are, `0..=1`.
+    pub roundness: f64,
+    /// How soft the edge is, `0..=1`: one fades across half the picture's
+    /// shorter side.
+    pub feather: f64,
+    /// Keeps the outside of the shape instead of the inside.
+    #[serde(skip_serializing_if = "is_false")]
+    pub invert: bool,
+}
+
+impl Default for ClipMask {
+    fn default() -> Self {
+        ClipMask::of(MaskShape::Circle)
+    }
+}
+
+impl ClipMask {
+    /// The smallest a mask's box may be, each way.
+    pub const MIN_SIZE: f64 = 0.01;
+    /// The largest, each way: four times the shorter side covers the
+    /// longest side of any picture a person would mask.
+    pub const MAX_SIZE: f64 = 4.0;
+    /// How far off the picture's centre a mask may be moved, in its sides.
+    pub const MAX_OFFSET: f64 = 2.0;
+
+    /// A mask of `shape` at the size and place a new one starts from: in
+    /// the middle, two thirds of the shorter side across - a band a third
+    /// thick, a rectangle a little wider than tall.
+    pub fn of(shape: MaskShape) -> ClipMask {
+        let (width, height) = match shape {
+            MaskShape::Linear => (1.0, 1.0),
+            MaskShape::Mirror => (1.0, 0.33),
+            MaskShape::Rectangle => (0.8, 0.5),
+            MaskShape::Circle | MaskShape::Heart | MaskShape::Star => (0.66, 0.66),
+        };
+        ClipMask {
+            shape,
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            rotation: 0.0,
+            roundness: 0.0,
+            feather: 0.0,
+            invert: false,
+        }
+    }
+
+    /// A number held to the range its field may hold; see [`Self::tidy`].
+    /// What a key on that number is held to as well.
+    pub fn clamp(property: KeyProperty, value: f64) -> f64 {
+        match property {
+            KeyProperty::MaskX | KeyProperty::MaskY => {
+                value.clamp(-Self::MAX_OFFSET, Self::MAX_OFFSET)
+            }
+            KeyProperty::MaskWidth | KeyProperty::MaskHeight => {
+                value.clamp(Self::MIN_SIZE, Self::MAX_SIZE)
+            }
+            KeyProperty::MaskRoundness | KeyProperty::MaskFeather => value.clamp(0.0, 1.0),
+            // A turn is a turn however many times round; a key past one is
+            // a spin, so neither is wrapped.
+            _ => value,
+        }
+    }
+
+    /// The number a keyable property names, or None for a property that
+    /// is not the mask's.
+    pub fn get(&self, property: KeyProperty) -> Option<f64> {
+        Some(match property {
+            KeyProperty::MaskX => self.x,
+            KeyProperty::MaskY => self.y,
+            KeyProperty::MaskWidth => self.width,
+            KeyProperty::MaskHeight => self.height,
+            KeyProperty::MaskRotation => self.rotation,
+            KeyProperty::MaskRoundness => self.roundness,
+            KeyProperty::MaskFeather => self.feather,
+            _ => return None,
+        })
+    }
+
+    /// Sets the number a keyable property names, held to its range. A
+    /// property that is not the mask's changes nothing.
+    pub fn set(&mut self, property: KeyProperty, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        let value = Self::clamp(property, value);
+        match property {
+            KeyProperty::MaskX => self.x = value,
+            KeyProperty::MaskY => self.y = value,
+            KeyProperty::MaskWidth => self.width = value,
+            KeyProperty::MaskHeight => self.height = value,
+            KeyProperty::MaskRotation => self.rotation = value,
+            KeyProperty::MaskRoundness => self.roundness = value,
+            KeyProperty::MaskFeather => self.feather = value,
+            _ => {}
+        }
+    }
+
+    /// Every number back in its range, a number that is not one replaced
+    /// by a new mask's.
+    pub fn tidy(self) -> ClipMask {
+        let fresh = ClipMask::of(self.shape);
+        let mut out = self;
+        for property in KeyProperty::MASK {
+            let value = self.get(property).filter(|value| value.is_finite());
+            let value = value.or_else(|| fresh.get(property)).unwrap_or(0.0);
+            out.set(property, value);
+        }
+        out
+    }
+
+    /// The engine's mask with these numbers.
+    pub fn engine(&self) -> concat_core::mask::ShapeMask {
+        concat_core::mask::ShapeMask {
+            shape: self.shape.engine(),
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+            rotation: self.rotation,
+            roundness: self.roundness,
+            feather: self.feather,
+            invert: self.invert,
+        }
+    }
+}
+
 /// Which property a user-set key belongs to.
 ///
-/// Five of the six are the picture's; the sixth is the mix's. They are one
+/// Five of the first six are the picture's placement and the sixth is the
+/// mix's; the seven after them are the mask's numbers. They are one
 /// enum because a key is a key - the panel that sets them, the commands that
 /// carry them and the document that stores them do not care which side of
 /// the clip a value ends up on, and only the thing that finally reads them
 /// does.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum KeyProperty {
@@ -842,6 +1061,20 @@ pub enum KeyProperty {
     Opacity,
     /// `Clip::volume`.
     Volume,
+    /// `ClipMask::x`.
+    MaskX,
+    /// `ClipMask::y`.
+    MaskY,
+    /// `ClipMask::width`.
+    MaskWidth,
+    /// `ClipMask::height`.
+    MaskHeight,
+    /// `ClipMask::rotation`.
+    MaskRotation,
+    /// `ClipMask::roundness`.
+    MaskRoundness,
+    /// `ClipMask::feather`.
+    MaskFeather,
 }
 
 impl KeyProperty {
@@ -855,6 +1088,13 @@ impl KeyProperty {
             KeyProperty::Rotation => "rotation",
             KeyProperty::Opacity => "opacity",
             KeyProperty::Volume => "volume",
+            KeyProperty::MaskX => "maskX",
+            KeyProperty::MaskY => "maskY",
+            KeyProperty::MaskWidth => "maskWidth",
+            KeyProperty::MaskHeight => "maskHeight",
+            KeyProperty::MaskRotation => "maskRotation",
+            KeyProperty::MaskRoundness => "maskRoundness",
+            KeyProperty::MaskFeather => "maskFeather",
         }
     }
 
@@ -867,19 +1107,49 @@ impl KeyProperty {
             "rotation" => KeyProperty::Rotation,
             "opacity" => KeyProperty::Opacity,
             "volume" => KeyProperty::Volume,
+            "maskX" => KeyProperty::MaskX,
+            "maskY" => KeyProperty::MaskY,
+            "maskWidth" => KeyProperty::MaskWidth,
+            "maskHeight" => KeyProperty::MaskHeight,
+            "maskRotation" => KeyProperty::MaskRotation,
+            "maskRoundness" => KeyProperty::MaskRoundness,
+            "maskFeather" => KeyProperty::MaskFeather,
             _ => return None,
         })
     }
 
     /// Every property that can be keyed, in the order a panel lists them.
-    pub const ALL: [KeyProperty; 6] = [
+    pub const ALL: [KeyProperty; 13] = [
         KeyProperty::Scale,
         KeyProperty::OffsetX,
         KeyProperty::OffsetY,
         KeyProperty::Rotation,
         KeyProperty::Opacity,
         KeyProperty::Volume,
+        KeyProperty::MaskX,
+        KeyProperty::MaskY,
+        KeyProperty::MaskWidth,
+        KeyProperty::MaskHeight,
+        KeyProperty::MaskRotation,
+        KeyProperty::MaskRoundness,
+        KeyProperty::MaskFeather,
     ];
+
+    /// The mask's numbers: the properties a clip's mask carries.
+    pub const MASK: [KeyProperty; 7] = [
+        KeyProperty::MaskX,
+        KeyProperty::MaskY,
+        KeyProperty::MaskWidth,
+        KeyProperty::MaskHeight,
+        KeyProperty::MaskRotation,
+        KeyProperty::MaskRoundness,
+        KeyProperty::MaskFeather,
+    ];
+
+    /// Whether this is one of the mask's numbers.
+    pub fn is_mask(self) -> bool {
+        KeyProperty::MASK.contains(&self)
+    }
 }
 
 /// How a key is approached from the one before it: a CSS timing function's
@@ -893,6 +1163,7 @@ impl KeyProperty {
 /// Serialised as a bare array: `"ease": [0.42, 0, 0.58, 1]`. Documents
 /// written before the curve editor spell it `"linear"` / `"in"` / `"out"` /
 /// `"inOut"` instead, and `from_value` still reads those.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Debug, Serialize)]
 #[serde(transparent)]
 pub struct KeyEase(pub [f64; 4]);
@@ -1019,6 +1290,7 @@ pub struct ClipKey {
 pub const KEY_EPSILON: f64 = 0.002;
 
 /// One point of a speed curve.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeedPoint {
@@ -1041,6 +1313,7 @@ pub struct Enhanced {
 }
 
 /// A transition on the cut into a clip.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Transition {
@@ -1056,6 +1329,7 @@ pub struct Transition {
 /// left-aligned one by its block's left edge and a right-aligned one by its
 /// right edge. Typing more into a left-aligned title grows it to the right
 /// and leaves its left edge where it was, as alignment means everywhere.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TextAlign {
@@ -1070,6 +1344,7 @@ pub enum TextAlign {
 
 /// Which figure a shape clip draws. The names are written into project
 /// files, so they are stable for ever.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShapeKind {
@@ -1123,6 +1398,7 @@ impl ShapeKind {
 /// How a shape clip is painted. Sizes are fractions of the frame's height,
 /// as a title's are, so a shape composed against 1080p is the same shape at
 /// 4K. A style arriving in a command needs only the fields it changes.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ShapeStyle {
@@ -1185,6 +1461,7 @@ impl Default for ShapeStyle {
 /// command needs only the fields it changes; the rest are the default's, so
 /// a caller can say `{ "content": "Hello" }` and get a title that looks like
 /// one the window would place.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextStyle {
@@ -1319,7 +1596,9 @@ pub(crate) mod wire {
     use serde::{Deserialize, Deserializer};
     use serde_json::Value;
 
-    use super::{Background, ClipKind, ColorSpace, MediaKind, ParamKey, ShapeKind, TextAlign};
+    use super::{
+        Background, ClipKind, ColorSpace, MaskShape, MediaKind, ParamKey, ShapeKind, TextAlign,
+    };
 
     /// The entries of a list that parse, in order; not a list at all is
     /// an empty one.
@@ -1419,6 +1698,12 @@ pub(crate) mod wire {
 
     /// A shape by name, a square for one this build does not know.
     pub fn shape_kind<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ShapeKind, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(serde_json::from_value(value).unwrap_or_default())
+    }
+
+    /// A mask's shape, or a circle for one this build does not know.
+    pub fn mask_shape<'de, D: Deserializer<'de>>(deserializer: D) -> Result<MaskShape, D::Error> {
         let value = Value::deserialize(deserializer)?;
         Ok(serde_json::from_value(value).unwrap_or_default())
     }
@@ -1548,6 +1833,10 @@ pub struct Clip {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "wire::maybe")]
     pub cutout: Option<Cutout>,
+    /// The shape that keeps part of the picture; see [`ClipMask`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "wire::maybe")]
+    pub mask: Option<ClipMask>,
     /// The camera's shake taken out; see [`Stabilize`]. None is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "wire::maybe")]
@@ -1689,6 +1978,7 @@ impl Clip {
             blend: String::new(),
             crop: None,
             cutout: None,
+            mask: None,
             stabilize: None,
             filters: Vec::new(),
             video_effects: Vec::new(),
@@ -1746,6 +2036,7 @@ impl Clip {
             .map(Crop::tidy)
             .filter(|crop| !crop.is_none());
         self.cutout = self.cutout.take().map(Cutout::tidy);
+        self.mask = self.mask.take().map(ClipMask::tidy);
         self.stabilize = self.stabilize.take().map(Stabilize::tidy);
         if let Some(transition) = self.transition_in.as_mut() {
             transition.duration = finite(transition.duration, 1.0).max(MIN_TRANSITION);
@@ -1764,6 +2055,7 @@ impl Clip {
                     key.value.clamp(-MAX_OFFSET, MAX_OFFSET)
                 }
                 KeyProperty::Rotation => key.value,
+                mask => ClipMask::clamp(mask, key.value),
             };
         }
         self.sort_keys();
@@ -1791,6 +2083,9 @@ impl Clip {
             KeyProperty::Rotation => self.rotation,
             KeyProperty::Opacity => self.opacity,
             KeyProperty::Volume => self.volume,
+            // A clip with no mask answers with a new one's numbers, so a
+            // panel opening on it shows what the first shape will start at.
+            mask => self.mask.unwrap_or_default().get(mask).unwrap_or_default(),
         }
     }
 
@@ -1848,6 +2143,12 @@ impl Clip {
             KeyProperty::Rotation => self.rotation = value,
             KeyProperty::Opacity => self.opacity = value,
             KeyProperty::Volume => self.volume = value,
+            // The mask's numbers are the mask's; a number written on a
+            // clip with none puts one on, the shape a new one starts as.
+            mask => self
+                .mask
+                .get_or_insert_with(ClipMask::default)
+                .set(mask, value),
         }
     }
 
@@ -2141,6 +2442,7 @@ impl Default for Timeline {
 /// The colour a picture is in: SDR on Rec. 709, or HDR on Rec. 2020 with
 /// the hybrid log-gamma or the perceptual quantiser transfer. A timeline's
 /// is what it is output in; a media file's, what it was recorded in.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ColorSpace {
@@ -2174,6 +2476,7 @@ impl ColorSpace {
 /// rate, so a build that predates this reads the document it always did,
 /// and a document from such a build gives every timeline that block on the
 /// way in.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoSettings {

@@ -28,6 +28,7 @@
 //! once and the job reports through the [`EventSink`] the API was made
 //! with, from that thread, which is why the sink must be `Send + Sync`.
 
+mod job;
 pub mod message;
 pub mod rpc;
 
@@ -47,13 +48,13 @@ use concat_host::preview::{FrameSpec, Monitor};
 use concat_host::session::EditorView;
 use concat_host::stabilize::{StabilizeRequest, Stabilizers};
 use concat_host::templates::{self, SlotFill};
-use concat_host::{ProjectInfo, Session, Titles, media, projects};
+use concat_host::{ProjectInfo, Session, Titles, lock, media, projects};
 use concat_project::Command;
 use concat_project::model::VideoSettings;
 
 pub use message::{
-    API_VERSION, ApiError, Dirs, Done, ErrorCode, Event, ExportSpec, Fill, PackageInfo, ParamInfo,
-    Picture, Reply, Request, Response, Started, VersionInfo, Written,
+    API_VERSION, ApiError, Dirs, Done, ErrorCode, Event, ExportSpec, Fill, JobState, JobStatus,
+    PackageInfo, ParamInfo, Picture, Reply, Request, Response, Started, VersionInfo, Written,
 };
 
 /// The export sheet's middle quality, and what an export gets when the
@@ -65,6 +66,18 @@ const DEFAULT_PRESET: &str = "medium";
 /// What every build of the API serves, before what is decided by the
 /// build or the embedder is added; see [`VersionInfo::capabilities`].
 const CAPABILITIES: &[&str] = &["events"];
+
+/// The JSON Schema of [`Request`]: one alternative per method, each the
+/// object its params are with `method` naming it, and every type a request
+/// carries - an edit [`Command`] and all it holds - under `$defs`. The
+/// descriptions are this crate's and `concat_project`'s doc comments, so
+/// what a caller is told about a field is what its maintainer wrote next
+/// to it. Generated, never written by hand: a method or a command field
+/// added to the types is in the schema on the next build.
+#[cfg(feature = "schema")]
+pub fn request_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(Request)).unwrap_or_default()
+}
 
 /// Where a job's events go. Called from the job's thread, so a transport
 /// that writes them to a caller locks its writer inside.
@@ -98,26 +111,89 @@ impl std::fmt::Display for Holder {
     }
 }
 
+/// Why a project folder could not be claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The other side of this process has it: the window, or the API it
+    /// serves.
+    Here(Holder),
+    /// Another process has it - a second window, `concat --mcp`, the CLI -
+    /// as its lock file says.
+    Elsewhere(lock::Owner),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::Here(holder) => write!(f, "open in {holder}"),
+            Refusal::Elsewhere(owner) => {
+                let what = if owner.role == "window" {
+                    "a Concat window"
+                } else {
+                    "another Concat process"
+                };
+                match owner.pid {
+                    Some(pid) => write!(f, "open in {what} (process {pid})"),
+                    None => write!(f, "open in {what}"),
+                }
+            }
+        }
+    }
+}
+
+/// One claimed folder: who has it in this process, and the lock that
+/// keeps every other process off it.
+struct Claim {
+    holder: Holder,
+    /// `None` where the folder would not take a lock file - one that
+    /// cannot be written - which costs the guard, not the open.
+    _lock: Option<lock::ProjectLock>,
+}
+
 /// The project folders open on this machine and who has each, shared
 /// between a window and the API it embeds, so neither opens a folder the
 /// other is editing and saves over its work (audit 2026-09-23, #5). Cheap
 /// to clone; every clone is the same register.
+///
+/// Each claimed folder is also locked against every other process
+/// ([`lock::ProjectLock`]): a second window, `concat --mcp` working on its
+/// own, the CLI. The lock goes with the claim, and with the process if it
+/// dies, so a crash leaves a folder the next opener takes over.
 #[derive(Clone, Default)]
-pub struct OpenProjects(Arc<Mutex<BTreeMap<String, Holder>>>);
+pub struct OpenProjects(Arc<Mutex<BTreeMap<String, Claim>>>);
 
 impl OpenProjects {
     /// Claims `path` for `holder`. Refused, naming who has it, when the
-    /// other side does; claiming again what one already holds is fine.
-    pub fn claim(&self, path: &str, holder: Holder) -> Result<(), Holder> {
+    /// other side of this process does or another process does; claiming
+    /// again what one already holds is fine.
+    pub fn claim(&self, path: &str, holder: Holder) -> Result<(), Refusal> {
         let key = key_of(path);
         let mut open = self
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match open.get(&key) {
-            Some(&other) if other != holder => Err(other),
-            _ => {
-                open.insert(key, holder);
+            Some(claim) if claim.holder != holder => Err(Refusal::Here(claim.holder)),
+            Some(_) => Ok(()),
+            None => {
+                let role = match holder {
+                    Holder::Window => "window",
+                    Holder::Api => "api",
+                };
+                let lock = match lock::ProjectLock::acquire(Path::new(path), role) {
+                    Ok(lock) => Some(lock),
+                    Err(lock::LockError::Held(owner)) => return Err(Refusal::Elsewhere(owner)),
+                    // A folder that will not take the file: a read-only
+                    // one, which nobody can save over anyway.
+                    Err(lock::LockError::Io(_)) => None,
+                };
+                open.insert(
+                    key,
+                    Claim {
+                        holder,
+                        _lock: lock,
+                    },
+                );
                 Ok(())
             }
         }
@@ -139,7 +215,7 @@ impl OpenProjects {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&key)
-            .copied()
+            .map(|claim| claim.holder)
     }
 }
 
@@ -162,8 +238,36 @@ pub struct Api {
     exporter: Exporter,
     events: EventSink,
     jobs: Jobs,
+    /// Every job's last known state and each running one's stop flag, fed
+    /// by the events on their way to `events`.
+    book: Arc<job::Book>,
     /// [`VersionInfo::capabilities`], in the order they were added.
     capabilities: Vec<String>,
+}
+
+/// A way to stop the jobs of one [`Api`] from any thread, without waiting
+/// for its thread to be free: what a server that is shutting down calls
+/// before it waits for that thread. Cheap to clone.
+#[derive(Clone)]
+pub struct Stopper {
+    book: Arc<job::Book>,
+    cutouts: Arc<Cutouts>,
+}
+
+impl Stopper {
+    /// Asks every job this API started to stop at its next frame - its
+    /// own and no other, even where the export slot is shared with a
+    /// window. Each then ends with [`ErrorCode::Cancelled`]. How many
+    /// were running.
+    pub fn cancel_all(&self) -> usize {
+        let running = self.book.cancel_all();
+        if running > 0 {
+            // A job still finding masks is in the analysis, not the
+            // render; the analysis is this API's own.
+            self.cutouts.cancel();
+        }
+        running
+    }
 }
 
 impl Api {
@@ -176,7 +280,16 @@ impl Api {
     /// An API over the given directories: a test's scratch, or an embedder
     /// with a home of its own.
     pub fn with_dirs(dirs: AppDirs, events: EventSink) -> Api {
+        let book = Arc::new(job::Book::default());
+        let events: EventSink = {
+            let book = Arc::clone(&book);
+            Arc::new(move |event: Event| {
+                book.record(&event);
+                events(event);
+            })
+        };
         Api {
+            book,
             titles: Titles::new(&dirs),
             cutouts: Arc::new(Cutouts::new(&dirs.data)),
             stabilizers: Arc::new(Stabilizers::new()),
@@ -205,6 +318,25 @@ impl Api {
         if !self.capabilities.iter().any(|known| known == name) {
             self.capabilities.push(name.to_owned());
         }
+    }
+
+    /// What stops this API's jobs from another thread; see [`Stopper`].
+    pub fn stopper(&self) -> Stopper {
+        Stopper {
+            book: Arc::clone(&self.book),
+            cutouts: Arc::clone(&self.cutouts),
+        }
+    }
+
+    /// [`Request::ExportStatus`].
+    pub fn job_status(&mut self, job: &str) -> Result<JobStatus, ApiError> {
+        self.jobs.reap(&self.book);
+        self.book.status(job).ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::NotFound,
+                format!("no job {job}: it never ran, or ended long ago"),
+            )
+        })
     }
 
     /// The export slot, for an embedder that shares it with a window.
@@ -280,7 +412,7 @@ impl Api {
 
     /// How many jobs are still running.
     pub fn running(&mut self) -> usize {
-        self.jobs.reap();
+        self.jobs.reap(&self.book);
         self.jobs.threads.len()
     }
 
@@ -293,7 +425,7 @@ impl Api {
     /// Runs one request. The response is what the request is worth; a job
     /// it begins reports through the sink from then on.
     pub fn dispatch(&mut self, request: Request) -> Response {
-        self.jobs.reap();
+        self.jobs.reap(&self.book);
         self.run(request).into()
     }
 
@@ -346,6 +478,7 @@ impl Api {
                 self.cancel(&job)?;
                 Ok(Reply::Done(Done {}))
             }
+            Request::ExportStatus { job } => Ok(Reply::Job(self.job_status(&job)?)),
             Request::PreviewFrame {
                 path,
                 time,
@@ -412,10 +545,19 @@ impl Api {
     /// Opens a session on a project the host just described and puts it at
     /// the front of the recents list.
     fn adopt(&mut self, info: ProjectInfo) -> Result<EditorView, ApiError> {
-        if let Err(holder) = self.open.claim(&info.path, Holder::Api) {
+        if let Err(refusal) = self.open.claim(&info.path, Holder::Api) {
+            // A window holding it is the case an agent meets: say how to
+            // go through that window instead of around it.
+            let how = match &refusal {
+                Refusal::Elsewhere(owner) if owner.role == "window" => {
+                    ". To work on it from an agent, turn on Settings > Automation in that window and run the agent with `concat --mcp window`; the project on screen stays the window's until live mode lands"
+                }
+                Refusal::Elsewhere(_) => ". Close it there first",
+                Refusal::Here(_) => "",
+            };
             return Err(ApiError::new(
                 ErrorCode::Refused,
-                format!("{} is open in {holder}", info.path),
+                format!("{} is {refusal}{how}", info.path),
             ));
         }
         let session = match Session::open_info(&info) {
@@ -603,6 +745,10 @@ impl Api {
             path: project_path,
             output: spec.output.clone(),
         };
+        self.book.start(
+            JobStatus::running(&started.job, &started.path, &started.output),
+            slot.cancel_handle(),
+        );
         let job = ExportJob {
             name: started.job.clone(),
             path: started.path.clone(),
@@ -613,17 +759,22 @@ impl Api {
             stabilizers: Arc::clone(&self.stabilizers),
             events: Arc::clone(&self.events),
         };
+        let book = Arc::clone(&self.book);
+        let name = started.job.clone();
         let thread = std::thread::Builder::new()
             .name(format!("export {}", started.job))
             .spawn(move || job.run(slot))
-            .map_err(|error| ApiError::failed(format!("could not start the export: {error}")))?;
+            .map_err(|error| {
+                book.abandon(&name);
+                ApiError::failed(format!("could not start the export: {error}"))
+            })?;
         self.jobs.threads.push((started.job.clone(), thread));
         Ok(started)
     }
 
     /// [`Request::ExportCancel`].
     pub fn cancel(&mut self, job: &str) -> Result<(), ApiError> {
-        self.jobs.reap();
+        self.jobs.reap(&self.book);
         if !self.jobs.threads.iter().any(|(name, _)| name == job) {
             return Err(ApiError::new(
                 ErrorCode::NotFound,
@@ -743,9 +894,16 @@ impl Jobs {
         format!("j{}", self.minted)
     }
 
-    /// Forgets the threads that have ended.
-    fn reap(&mut self) {
-        self.threads.retain(|(_, thread)| !thread.is_finished());
+    /// Forgets the threads that have ended. One that ended without its
+    /// last event - a panic in the render - is booked as failed.
+    fn reap(&mut self, book: &job::Book) {
+        self.threads.retain(|(name, thread)| {
+            let ended = thread.is_finished();
+            if ended {
+                book.abandon(name);
+            }
+            !ended
+        });
     }
 
     /// Waits for the rest.
@@ -1214,6 +1372,50 @@ mod tests {
         assert_eq!(recents[0].name, "Round trip");
     }
 
+    /// A clip's mask over the wire, as a caller writes it: put on through
+    /// `updateClip`'s patch, its numbers keyed through `setClipKey`, and
+    /// read back in the project the reply carries (#239).
+    #[test]
+    fn a_mask_is_set_and_keyed_through_the_api() {
+        let (mut api, scratch, _) = api();
+        let path = project(&mut api, &scratch, "Masked");
+        let added = view(ok(api.dispatch(Request::EditApply {
+            path: path.clone(),
+            command: Box::new(Command::AddMedia {
+                item: still("/nowhere/still.png"),
+            }),
+        })));
+        let placed = view(ok(api.dispatch(Request::EditApply {
+            path: path.clone(),
+            command: Box::new(Command::AddClipAtFirstFree {
+                media_id: added.created_id.expect("minted"),
+                start: 0.0,
+            }),
+        })));
+        let clip_id = placed.project.active().clips[0].id.clone();
+        for command in [
+            json!({ "op": "updateClip", "clipId": clip_id,
+                    "patch": { "mask": { "shape": "star", "feather": 0.3, "invert": true } } }),
+            json!({ "op": "setClipKey", "clipId": clip_id, "property": "maskWidth",
+                    "at": 0.0, "value": 0.2 }),
+            json!({ "op": "setClipKey", "clipId": clip_id, "property": "maskWidth",
+                    "at": 1.0, "value": 1.2 }),
+        ] {
+            let request: Request = serde_json::from_value(json!({
+                "method": "edit.apply", "path": path, "command": command
+            }))
+            .expect("parses");
+            ok(api.dispatch(request));
+        }
+        let got = view(ok(api.dispatch(Request::ProjectGet { path })));
+        let clip = &got.project.active().clips[0];
+        let mask = clip.mask.expect("a mask");
+        assert_eq!(mask.shape, concat_project::model::MaskShape::Star);
+        assert!(mask.invert && (mask.feather - 0.3).abs() < 1e-12);
+        let width = clip.value_at(concat_project::model::KeyProperty::MaskWidth, 0.5);
+        assert!((width - 0.7).abs() < 1e-12, "the key rides: {width}");
+    }
+
     #[test]
     fn a_refusal_is_the_command_layers_sentence_with_its_code() {
         let (mut api, scratch, _) = api();
@@ -1385,7 +1587,27 @@ mod tests {
             }
             other => panic!("ended with {other:?}"),
         }
+        drop(events);
         assert_eq!(api.running(), 0);
+        // Asked afterwards, by a caller who was not listening, the job
+        // says the same.
+        let status = match ok(api.dispatch(Request::ExportStatus {
+            job: "j1".to_owned(),
+        })) {
+            Reply::Job(status) => status,
+            _ => panic!("not a job's status"),
+        };
+        assert_eq!(status.state, JobState::Failed);
+        assert_eq!(status.path, path);
+        assert_eq!(
+            status.error.map(|error| error.code),
+            Some(ErrorCode::Failed)
+        );
+        let unknown = err(api.dispatch(Request::ExportStatus {
+            job: "j9".to_owned(),
+        }));
+        assert_eq!(unknown.code, ErrorCode::NotFound);
+        assert_eq!(api.stopper().cancel_all(), 0, "nothing left to stop");
     }
 
     #[test]
@@ -1507,13 +1729,54 @@ mod tests {
         assert_eq!(open.holder(&path), Some(Holder::Api));
         assert_eq!(
             open.claim(&path, Holder::Window),
-            Err(Holder::Api),
+            Err(Refusal::Here(Holder::Api)),
             "and the window is refused in turn"
+        );
+        assert!(
+            Path::new(&path).join(lock::FILE).exists(),
+            "and every other process by the lock"
         );
         ok(api.dispatch(Request::ProjectClose {
             path: path.clone(),
             save: false,
         }));
         assert_eq!(open.holder(&path), None, "closing gives it back");
+        assert!(!Path::new(&path).join(lock::FILE).exists(), "lock and all");
+    }
+
+    /// Two registers are two processes as far as the lock goes: an API
+    /// that does not share the window's register - `concat --mcp` on its
+    /// own - is kept off a folder the window has, and told the way in.
+    #[test]
+    fn a_project_another_process_holds_is_refused_with_the_way_in() {
+        let (mut other, _other_scratch, _other_events) = api();
+        let (mut api, scratch, _events) = api();
+        let path = project(&mut api, &scratch, "Held");
+        ok(api.dispatch(Request::ProjectClose {
+            path: path.clone(),
+            save: false,
+        }));
+        let window = lock::ProjectLock::acquire(Path::new(&path), "window").expect("the window");
+        let refused = err(api.dispatch(Request::ProjectOpen { path: path.clone() }));
+        assert_eq!(refused.code, ErrorCode::Refused);
+        assert!(
+            refused.message.contains("a Concat window (process"),
+            "{}",
+            refused.message
+        );
+        assert!(
+            refused.message.contains("concat --mcp window"),
+            "{}",
+            refused.message
+        );
+        drop(window);
+        ok(api.dispatch(Request::ProjectOpen { path: path.clone() }));
+
+        let refused = err(other.dispatch(Request::ProjectOpen { path: path.clone() }));
+        assert!(
+            refused.message.contains("another Concat process"),
+            "{}",
+            refused.message
+        );
     }
 }

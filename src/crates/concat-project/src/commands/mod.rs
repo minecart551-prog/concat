@@ -13,7 +13,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    AppliedFilter, AudioTrack, Background, Clip, ClipKind, ColorRange, ColorSpace, Crop,
+    AppliedFilter, AudioTrack, Background, Clip, ClipKind, ClipMask, ColorRange, ColorSpace, Crop,
     CustomFont, Cutout, CutoutMode, Enhanced, Framing, KeyEase, KeyProperty, MediaItem, MediaKind,
     MediaOrigin, Project, ShapeStyle, SpeedPoint, Stabilize, Stroke, TextStyle, Timeline, Track,
     Transition, VideoSettings,
@@ -44,6 +44,7 @@ pub(crate) use crate::model::ranges::{
 
 /// Which end of a clip a trim drags. The two are not symmetric: see
 /// [`Command::TrimClip`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrimEdge {
@@ -55,6 +56,7 @@ pub enum TrimEdge {
 }
 
 /// Which per-track toggle a [`Command::SetTrackFlag`] flips.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrackFlag {
@@ -65,6 +67,7 @@ pub enum TrackFlag {
 }
 
 /// Where one clip is going, in a multi-clip move.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipMove {
@@ -81,6 +84,7 @@ pub struct ClipMove {
 /// A partial update to one clip. Every field optional; `transition_in` and
 /// `text` are double-optional so "clear it" and "leave it alone" stay
 /// distinct on the wire (absent = untouched, null = cleared).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipPatch {
@@ -120,7 +124,19 @@ pub struct ClipPatch {
         with = "double_option",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<Crop>"))]
     pub crop: Option<Option<Crop>>,
+    /// The mask, same three-way wire semantics as `crop`: absent leaves it
+    /// alone, null takes it off, a value replaces it, tidied on the way in.
+    /// Its keys are the clip's own (`setClipKey` with `maskX` and on), and
+    /// stay when it is taken off, for a mask put back on to ride again.
+    #[serde(
+        default,
+        with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<ClipMask>"))]
+    pub mask: Option<Option<ClipMask>>,
     /// Wholesale replacement of the audio filter chain - the UI sends the
     /// full list, not a diff.
     pub filters: Option<Vec<AppliedFilter>>,
@@ -133,6 +149,7 @@ pub struct ClipPatch {
         with = "double_option",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<Transition>"))]
     pub transition_in: Option<Option<Transition>>,
     /// The title styling, same three-way wire semantics as `transition_in`.
     /// Setting a style also renames the clip after its first line.
@@ -141,6 +158,7 @@ pub struct ClipPatch {
         with = "double_option",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<TextStyle>"))]
     pub text: Option<Option<TextStyle>>,
     /// Which of the media's audio streams the clip plays, by stream index:
     /// absent leaves it alone, null goes back to the file's first, a value
@@ -150,6 +168,7 @@ pub struct ClipPatch {
         with = "double_option",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<u32>"))]
     pub audio_stream: Option<Option<u32>>,
     /// The clip's own background over the timeline's: absent leaves it
     /// alone, null goes back to following the timeline's, a value - black
@@ -159,6 +178,7 @@ pub struct ClipPatch {
         with = "double_option",
         skip_serializing_if = "Option::is_none"
     )]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<Background>"))]
     pub background: Option<Option<Background>>,
 }
 
@@ -184,6 +204,7 @@ mod double_option {
 }
 
 /// A media item as probed by the host, before the model mints its id.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewMedia {
@@ -231,6 +252,7 @@ pub struct NewMedia {
 /// fields. [`apply`] is the single place each variant's meaning lives; the
 /// notes here state the contract - clamps, tolerances, what gets minted -
 /// so a caller need not read `apply` to know what a command will do.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
 // A clip patch carries a whole text style, which is the largest variant by
@@ -403,7 +425,10 @@ pub enum Command {
     /// package named, at its defaults, and the clip's opacity is how hard it
     /// is applied.
     AddLayerClip {
-        /// The lane to place it on; None picks the first free track.
+        /// The lane to place it on. None picks the first free lane *above*
+        /// the highest one occupied over its span, minting one at the top
+        /// when every lane above is taken: a layer treats what is beneath
+        /// it, so one under the picture would treat nothing.
         track_id: Option<String>,
         /// Timeline position in seconds, floored at 0.
         start: f64,
@@ -1102,6 +1127,17 @@ impl Command {
                         .iter()
                         .flatten()
                         .any(|crop| bad([crop.left, crop.top, crop.right, crop.bottom]))
+                    || patch.mask.iter().flatten().any(|mask| {
+                        bad([
+                            mask.x,
+                            mask.y,
+                            mask.width,
+                            mask.height,
+                            mask.rotation,
+                            mask.roundness,
+                            mask.feather,
+                        ])
+                    })
                     || patch.filters.as_deref().is_some_and(bad_chain)
                     || patch.video_effects.as_deref().is_some_and(bad_chain)
                     || patch

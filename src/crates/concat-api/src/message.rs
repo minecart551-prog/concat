@@ -46,6 +46,7 @@ pub const API_VERSION: &str = "0.2";
 /// path [`Request::ProjectOpen`] took; the API keeps one session per folder
 /// and a method on a folder that is not open is an error, not a silent
 /// open, so a caller always knows what it is editing.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all_fields = "camelCase")]
 pub enum Request {
@@ -215,6 +216,14 @@ pub enum Request {
         /// The job [`Started`] named.
         job: String,
     },
+    /// How a job stands: running and how far along, or how it ended. The
+    /// same news the events carry, for a caller that was not listening
+    /// when it came; the last few finished jobs are remembered.
+    #[serde(rename = "export.status")]
+    ExportStatus {
+        /// The job [`Started`] named.
+        job: String,
+    },
 
     /// Composites the true frame at one instant. Written as a PNG to
     /// `output` when there is one, and handed back inline as a
@@ -238,6 +247,7 @@ pub enum Request {
 }
 
 /// One template slot and the file that takes it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Fill {
@@ -249,6 +259,7 @@ pub struct Fill {
 
 /// How an export is rendered. Everything but the output is optional and
 /// defaults to what the window's sheet defaults to.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportSpec {
@@ -316,6 +327,8 @@ pub enum Reply {
     Template(TemplateInfo),
     /// [`Request::ExportRun`]: the job that is now running.
     Started(Started),
+    /// [`Request::ExportStatus`].
+    Job(JobStatus),
     /// [`Request::PreviewFrame`] with an output: the file written.
     Written(Written),
     /// [`Request::PreviewFrame`] without one: the picture itself.
@@ -385,6 +398,73 @@ pub struct Started {
     pub path: String,
     /// The file it will write.
     pub output: String,
+}
+
+/// Where a job is in its life.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum JobState {
+    /// Still working.
+    Running,
+    /// Wrote its file.
+    Done,
+    /// Stopped by [`Request::ExportCancel`].
+    Cancelled,
+    /// Ended without its file; `error` says why.
+    Failed,
+}
+
+/// How one job stands: [`Request::ExportStatus`]'s reply.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobStatus {
+    /// The job's name.
+    pub job: String,
+    /// The project it works on.
+    pub path: String,
+    /// The file it writes.
+    pub output: String,
+    /// Running, or how it ended.
+    pub state: JobState,
+    /// What it is doing: "cutout" while masks are found, "stabilize" while
+    /// shake is measured, then "video",
+    /// "audio" and "mux". Absent until it has said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Frames rendered, in the video stage.
+    pub frame: i64,
+    /// Frames in all, in the video stage; 0 until known.
+    pub total: i64,
+    /// How far along the current stage is, `0..=1`; 1 once done.
+    pub fraction: f64,
+    /// The written file's picture size, once done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// The written file's picture size, once done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// Why it failed, or that it was cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ApiError>,
+}
+
+impl JobStatus {
+    /// A job that has just begun.
+    pub fn running(job: &str, path: &str, output: &str) -> JobStatus {
+        JobStatus {
+            job: job.to_owned(),
+            path: path.to_owned(),
+            output: output.to_owned(),
+            state: JobState::Running,
+            stage: None,
+            frame: 0,
+            total: 0,
+            fraction: 0.0,
+            width: None,
+            height: None,
+            error: None,
+        }
+    }
 }
 
 /// A frame handed back without touching the disk.

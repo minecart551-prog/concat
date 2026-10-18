@@ -54,6 +54,8 @@ mod platform;
 pub use platform::{
     ExportPublisher, FilePicker, PickKinds, install_export_publisher, install_file_picker,
 };
+#[cfg(target_os = "android")]
+pub use platform::{LinkOpener, install_link_opener};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use platform::{MicrophoneAccess, install_microphone_access};
 mod panes;
@@ -100,6 +102,7 @@ use panes::monitor::MonitorMsg;
 use panes::project::ProjectMsg;
 use panes::relink::RelinkMsg;
 use panes::settings::SettingsMsg;
+use panes::sounds::SoundsMsg;
 use panes::speech::SpeechMsg;
 use panes::start::StartMsg;
 use panes::timeline::TimelineMsg;
@@ -214,6 +217,7 @@ fn wire(app: &App, shell: &Shell) {
         editor.set_audio_effects(ModelRc::from(models.audio_effects.clone()));
         editor.set_catalogue_effects(ModelRc::from(models.catalogue_effects.clone()));
         editor.set_catalogue_filters(ModelRc::from(models.catalogue_filters.clone()));
+        editor.set_catalogue_luts(ModelRc::from(models.catalogue_luts.clone()));
         editor.set_catalogue_audio(ModelRc::from(models.catalogue_audio.clone()));
         editor.set_catalogue_transitions(ModelRc::from(models.catalogue_transitions.clone()));
         editor.set_effect_groups(ModelRc::from(models.effect_groups.clone()));
@@ -243,9 +247,20 @@ fn wire(app: &App, shell: &Shell) {
         app.set_speech_model_details(ModelRc::from(models.speech_model_details.clone()));
         app.set_speech_voices(ModelRc::from(models.speakers.clone()));
         app.set_speech_voice_details(ModelRc::from(models.speaker_details.clone()));
+        app.set_speech_voice_avatars(ModelRc::from(models.speaker_avatars.clone()));
         app.set_speech_samples(ModelRc::from(models.speech_samples.clone()));
         app.set_speech_sample_waves(ModelRc::from(models.speech_sample_waves.clone()));
         app.set_speech_sample_details(ModelRc::from(models.speech_sample_details.clone()));
+        app.global::<Sounds>()
+            .set_mine(ModelRc::from(models.sounds_mine.clone()));
+        app.global::<Sounds>()
+            .set_voices_saved(ModelRc::from(models.voices_saved.clone()));
+        app.global::<Sounds>()
+            .set_concat(ModelRc::from(models.sounds_concat.clone()));
+        app.global::<Sounds>()
+            .set_voices_builtin(ModelRc::from(models.voices_builtin.clone()));
+        app.global::<Sounds>()
+            .set_styles(ModelRc::from(models.voice_styles.clone()));
         app.set_voiceover_devices(ModelRc::from(models.voiceover_devices.clone()));
         app.set_app_menu_items(ModelRc::from(models.bar.clone()));
         app.set_transcribers(ModelRc::from(models.transcribers.clone()));
@@ -452,6 +467,18 @@ fn wire(app: &App, shell: &Shell) {
     app.on_start_forget_recent(on_window!(|state, path: SharedString| {
         state.handle(Msg::Start(StartMsg::ForgetRecent(path.to_string())));
     }));
+    app.on_start_reveal_recent(on_window!(|state, path: SharedString| {
+        state.handle(Msg::Start(StartMsg::RevealRecent(path.to_string())));
+    }));
+    app.on_start_search_edited(on_window!(|state, query: SharedString| {
+        state.handle(Msg::Start(StartMsg::SearchEdited(query.to_string())));
+    }));
+    app.on_start_sort_changed(on_window!(|state, sort: i32| {
+        state.handle(Msg::Start(StartMsg::Sort(sort)));
+    }));
+    app.on_start_link(on_window!(|state, name: SharedString| {
+        state.handle(Msg::Start(StartMsg::Link(name.to_string())));
+    }));
 
     // ── the workspace's arrangement ──
     editor.on_workspace_resized(on_dock!(|state, width: f32, height: f32| {
@@ -645,6 +672,16 @@ fn wire(app: &App, shell: &Shell) {
     editor.on_library_apply_filter(on_window!(
         |state, id: SharedString, label: SharedString| {
             state.place_filter_layer(id.as_str(), label.as_str());
+        }
+    ));
+    // The Adjustments page: a layer that grades everything beneath it,
+    // and a LUT onto the selected clip or, with none, as a layer.
+    editor.on_library_add_adjustment(on_window!(|state, label: SharedString| {
+        state.place_adjustment_layer(label.as_str());
+    }));
+    editor.on_library_apply_lut(on_window!(
+        |state, id: SharedString, label: SharedString| {
+            state.apply_lut(id.as_str(), label.as_str());
         }
     ));
     editor.on_library_audition_filter(on_window!(|state, id: SharedString| {
@@ -1119,6 +1156,73 @@ fn wire(app: &App, shell: &Shell) {
     app.global::<SourcePreview>().on_closed(on_window!(|state| {
         state.close_source();
     }));
+
+    // ── the library's Audio page ──
+    {
+        let sounds = app.global::<Sounds>();
+        // The picker answers on a turn of its own, the way the bin's does;
+        // see `host::pick_files_then`.
+        sounds.on_import(|| {
+            host::pick_files_then(
+                i18n::t("sounds.importSounds"),
+                Some((i18n::t("common.audio"), &concat_host::sounds::EXTENSIONS)),
+                |studio, _, _, paths| studio.handle(Msg::Sounds(SoundsMsg::Import(paths))),
+            );
+        });
+        sounds.on_preview(on_window!(|state, id: SharedString| {
+            state.handle(Msg::Sounds(SoundsMsg::Preview(id.to_string())));
+        }));
+        sounds.on_add(on_window!(|state, id: SharedString| {
+            state.handle(Msg::Sounds(SoundsMsg::Add(id.to_string())));
+        }));
+        sounds.on_remove(on_window!(|state, id: SharedString| {
+            state.handle(Msg::Sounds(SoundsMsg::Remove(id.to_string())));
+        }));
+        sounds.on_shown(on_window!(|state, on: bool| {
+            state.handle(Msg::Sounds(SoundsMsg::Shown(on)));
+        }));
+        // Voices: Text to speech on the voice or style clicked.
+        // Concat's own sounds: the list asked for by a click, never at
+        // startup.
+        sounds.on_load_concat(on_window!(|state| {
+            state.handle(Msg::Sounds(SoundsMsg::LoadConcat));
+        }));
+        sounds.on_concat_category_changed(on_window!(|state, index: i32| {
+            state.handle(Msg::Sounds(SoundsMsg::ConcatCategory(index)));
+        }));
+        sounds.on_voice_open(on_window!(|state, id: SharedString| {
+            state.open_voice(id.as_str());
+        }));
+        sounds.on_voice_remove(on_window!(|state, id: SharedString| {
+            state.forget_voice(id.as_str());
+        }));
+    }
+    // Text to speech keeps the sample it reads in as a voice of the
+    // user's own, with a name and a picture.
+    app.on_speech_save_name_edited(on_window!(|state, name: SharedString| {
+        state.handle(Msg::Speech(SpeechMsg::SaveNameEdited(name.to_string())));
+    }));
+    app.on_speech_pick_picture(|| {
+        host::pick_files_then(
+            i18n::t("speech.picture"),
+            Some((
+                i18n::t("speech.picture"),
+                &concat_host::voices::PICTURE_EXTENSIONS,
+            )),
+            |studio, _, _, paths| {
+                if let Some(path) = paths.into_iter().next() {
+                    studio.handle(Msg::Speech(SpeechMsg::PicturePicked(path)));
+                }
+            },
+        );
+    });
+    app.on_speech_save_voice(on_window!(|state| {
+        state.handle(Msg::Speech(SpeechMsg::SaveVoice));
+    }));
+    app.on_speech_clear_style(on_window!(|state| {
+        state.handle(Msg::Speech(SpeechMsg::ClearStyle));
+    }));
+    {}
     app.global::<SourcePreview>()
         .on_seek(on_window!(|state, seconds: f32| {
             state.source_seek(f64::from(seconds));
@@ -2068,7 +2172,23 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             Shell::with(|shell, app| {
                 {
                     let mut studio = shell.studio.borrow_mut();
-                    studio.handle(Msg::Media(MediaMsg::Import(paths)));
+                    // Sound files dropped while the library shows its
+                    // Audio page go into the user's own sounds, as its
+                    // Import would take them; anything else, or the page
+                    // not up, into the project's bin.
+                    let to_library = studio.sounds.shown
+                        && !paths.is_empty()
+                        && paths.iter().all(|path| concat_host::sounds::is_sound(path));
+                    if studio.on_start {
+                        // On the launch screen there is no project to
+                        // import into: a dropped project opens, and media
+                        // starts one.
+                        studio.handle(Msg::Start(StartMsg::Dropped(paths)));
+                    } else if to_library {
+                        studio.handle(Msg::Sounds(SoundsMsg::Import(paths)));
+                    } else {
+                        studio.handle(Msg::Media(MediaMsg::Import(paths)));
+                    }
                 }
                 shell.studio.borrow_mut().refresh_art();
                 shell.studio.borrow().publish(&app, &shell.models);
@@ -2098,6 +2218,10 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     let phone = platform::phone();
     app.set_phone(phone);
 
+    // The launch screen's version line, and whether its drop zone is
+    // offered: a drag in from the system is a desk's (see platform.rs).
+    app.set_app_version(env!("CARGO_PKG_VERSION").into());
+    app.set_can_drop(cfg!(not(any(target_os = "android", target_os = "ios"))));
     // The user's own packages - imported looks, and any effect folder they
     // or the community wrote - sit beside the built-ins from the first
     // frame. One that will not load is skipped, and its reason is the

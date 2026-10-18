@@ -47,14 +47,16 @@ use concat_project::{Command, PlayheadSide};
 mod backdrop;
 mod consolidate;
 use consolidate::MergeJob;
+mod masking;
+use masking::{MaskFrame, MaskGrip};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::dock::{
     Dock, DockLayout, SEAT_GAP, default_dock, lay_out, nearest_row, row_at, row_top,
 };
 use crate::format::{
-    WAVE_BAR, WAVE_PITCH, colour_of, frames_timecode, hex_of, hex_rgba, hex_with_alpha,
-    wave_columns, wave_path, when_phrase,
+    WAVE_BAR, WAVE_PITCH, colour_of, frames_timecode, hex_of, hex_rgba, hex_with_alpha, rate_label,
+    running_time, wave_columns, wave_path, when_phrase,
 };
 use crate::grading;
 use crate::host::{
@@ -598,6 +600,14 @@ pub enum Gesture {
         centre: (f64, f64),
         from: f64,
     },
+    /// A grip of the selected clip's mask dragged: the mask as the press
+    /// found it, placed in the frame, and the press in frame pixels.
+    StageMask {
+        clip: String,
+        grip: MaskGrip,
+        frame: MaskFrame,
+        from: (f64, f64),
+    },
     /// A brush on the stage: the stroke so far, in source fractions for
     /// the command it becomes and in stage fractions for the line drawn
     /// under the pointer meanwhile.
@@ -700,6 +710,8 @@ pub struct Models {
     /// The catalogue's shelves, one list per kind, and the shelf labels.
     pub catalogue_effects: Rc<VecModel<CatalogueEntryData>>,
     pub catalogue_filters: Rc<VecModel<CatalogueEntryData>>,
+    /// The looks made from tables, for the Adjustments page's LUTs shelf.
+    pub catalogue_luts: Rc<VecModel<CatalogueEntryData>>,
     pub catalogue_audio: Rc<VecModel<CatalogueEntryData>>,
     pub catalogue_transitions: Rc<VecModel<CatalogueEntryData>>,
     pub effect_groups: Rc<VecModel<SharedString>>,
@@ -745,11 +757,18 @@ pub struct Models {
     pub speech_model_details: Rc<VecModel<SharedString>>,
     pub speakers: Rc<VecModel<SharedString>>,
     pub speaker_details: Rc<VecModel<SharedString>>,
+    pub speaker_avatars: Rc<VecModel<crate::ui::AvatarData>>,
     pub speech_samples: Rc<VecModel<SharedString>>,
     /// The microphones the voiceover panel lists.
     pub voiceover_devices: Rc<VecModel<SharedString>>,
     pub speech_sample_waves: Rc<VecModel<SharedString>>,
     pub speech_sample_details: Rc<VecModel<SharedString>>,
+    /// The Audio page's shelves.
+    pub sounds_mine: Rc<VecModel<crate::ui::SoundCardData>>,
+    pub voices_saved: Rc<VecModel<crate::ui::VoiceCardData>>,
+    pub sounds_concat: Rc<VecModel<crate::ui::SoundCardData>>,
+    pub voices_builtin: Rc<VecModel<crate::ui::VoiceCardData>>,
+    pub voice_styles: Rc<VecModel<crate::ui::VoiceCardData>>,
     pub transcribers: Rc<VecModel<ModelData>>,
     pub voices: Rc<VecModel<ModelData>>,
     /// The Version page's releases, and beside each its day or that it
@@ -784,6 +803,7 @@ impl Models {
             audio_effects: Rc::new(VecModel::default()),
             catalogue_effects: Rc::new(VecModel::default()),
             catalogue_filters: Rc::new(VecModel::default()),
+            catalogue_luts: Rc::new(VecModel::default()),
             catalogue_audio: Rc::new(VecModel::default()),
             catalogue_transitions: Rc::new(VecModel::default()),
             effect_groups: Rc::new(VecModel::default()),
@@ -814,10 +834,16 @@ impl Models {
             speech_model_details: Rc::new(VecModel::default()),
             speakers: Rc::new(VecModel::default()),
             speaker_details: Rc::new(VecModel::default()),
+            speaker_avatars: Rc::new(VecModel::default()),
             speech_samples: Rc::new(VecModel::default()),
             voiceover_devices: Rc::new(VecModel::default()),
             speech_sample_waves: Rc::new(VecModel::default()),
             speech_sample_details: Rc::new(VecModel::default()),
+            sounds_mine: Rc::new(VecModel::default()),
+            voices_saved: Rc::new(VecModel::default()),
+            sounds_concat: Rc::new(VecModel::default()),
+            voices_builtin: Rc::new(VecModel::default()),
+            voice_styles: Rc::new(VecModel::default()),
             transcribers: Rc::new(VecModel::default()),
             voices: Rc::new(VecModel::default()),
             versions: Rc::new(VecModel::default()),
@@ -950,9 +976,13 @@ pub struct Studio {
     // ── the launch screen ──
     pub on_start: bool,
     pub start: crate::panes::start::StartPane,
-    pub recents: Vec<ProjectInfo>,
+    pub recents: Vec<projects::Recent>,
     pub posters: HashMap<String, slint::Image>,
     posters_pending: HashSet<String>,
+    /// How long each recent project's timeline runs, in seconds, read on
+    /// the poster's worker. A path here has been tried, poster and all,
+    /// and is not asked for again until its project is next closed.
+    lengths: HashMap<String, Option<f64>>,
     pub project_name: String,
 
     // ── the workspace ──
@@ -1061,6 +1091,8 @@ pub struct Studio {
     pub project_sheet: crate::panes::project::ProjectPane,
     pub captions: crate::panes::captions::CaptionsPane,
     pub speech: crate::panes::speech::SpeechPane,
+    /// The library's Audio page: the user's own sounds.
+    pub sounds: crate::panes::sounds::SoundsPane,
     /// A file from the library lent the monitor and the speakers; see
     /// `crate::source`.
     pub source: Option<crate::source::Source>,
@@ -1206,15 +1238,49 @@ fn new_title_style(prefs: &crate::prefs::Preferences) -> TextStyle {
     }
 }
 
-/// A label for a catalogue id: "black-white" reads as "Black White".
+/// The card a package shows on a shelf: an author's own still from the
+/// package's folder, else the card drawn for it by its own shader; read
+/// once and kept.
+fn package_art(
+    package: &concat_effects::catalogue::Package,
+    look_art: &std::cell::RefCell<HashMap<String, slint::Image>>,
+    card_paths: &HashMap<String, std::path::PathBuf>,
+) -> slint::Image {
+    let id = package.id();
+    look_art
+        .borrow_mut()
+        .entry(id.to_owned())
+        .or_insert_with(|| {
+            package
+                .folder
+                .as_deref()
+                .and_then(|folder| slint::Image::load_from_path(&folder.join("preview.png")).ok())
+                .or_else(|| {
+                    let card = card_paths.get(id)?;
+                    slint::Image::load_from_path(card).ok()
+                })
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
+/// A look made from a table - an imported `.cube`, or any package that
+/// carries a `[lut]` - which the Adjustments page's LUTs shelf lists and
+/// the Filters page does not.
+fn is_lut(package: &concat_effects::catalogue::Package) -> bool {
+    package.kind() == PackageKind::Filter && package.lut().is_some()
+}
+
 /// One kind's shelves for the inspector: the shelf labels, in catalogue
-/// order, and every package on them with the index of its shelf.
+/// order, and every package on them with the index of its shelf. Only the
+/// packages `keep` takes are shelved at all.
 fn shelves(
     kind: PackageKind,
     view: &LibraryView,
     favourites: &[String],
     look_art: &std::cell::RefCell<HashMap<String, slint::Image>>,
     card_paths: &HashMap<String, std::path::PathBuf>,
+    keep: impl Fn(&concat_effects::catalogue::Package) -> bool,
 ) -> (Vec<SharedString>, Vec<CatalogueEntryData>) {
     let mut groups: Vec<String> = Vec::new();
     let mut entries = Vec::new();
@@ -1223,7 +1289,7 @@ fn shelves(
         let meta = &package.manifest.effect;
         // The colour panel's own package: every picture clip can carry it,
         // and it has a tab, not a shelf.
-        if meta.id == ADJUST_ID {
+        if meta.id == ADJUST_ID || !keep(package) {
             continue;
         }
         let category = if meta.category.is_empty() {
@@ -1263,25 +1329,7 @@ fn shelves(
         if !shown {
             continue;
         }
-        // An author's own still from the package's folder, else the card
-        // drawn for the package by its own shader; read once and kept.
-        let art = look_art
-            .borrow_mut()
-            .entry(meta.id.clone())
-            .or_insert_with(|| {
-                package
-                    .folder
-                    .as_deref()
-                    .and_then(|folder| {
-                        slint::Image::load_from_path(&folder.join("preview.png")).ok()
-                    })
-                    .or_else(|| {
-                        let card = card_paths.get(&meta.id)?;
-                        slint::Image::load_from_path(card).ok()
-                    })
-                    .unwrap_or_default()
-            })
-            .clone();
+        let art = package_art(package, look_art, card_paths);
         entries.push(CatalogueEntryData {
             id: meta.id.as_str().into(),
             name: name.into(),
@@ -1373,6 +1421,13 @@ fn key_field_of(property: model::KeyProperty) -> ClipField {
         model::KeyProperty::Rotation => ClipField::Rotation,
         model::KeyProperty::Opacity => ClipField::Opacity,
         model::KeyProperty::Volume => ClipField::Volume,
+        model::KeyProperty::MaskX => ClipField::MaskX,
+        model::KeyProperty::MaskY => ClipField::MaskY,
+        model::KeyProperty::MaskWidth => ClipField::MaskWidth,
+        model::KeyProperty::MaskHeight => ClipField::MaskHeight,
+        model::KeyProperty::MaskRotation => ClipField::MaskRotation,
+        model::KeyProperty::MaskRoundness => ClipField::MaskRoundness,
+        model::KeyProperty::MaskFeather => ClipField::MaskFeather,
     }
 }
 
@@ -1388,6 +1443,13 @@ struct ShelfStamp {
 
 /// The built-in colour package's id; see `adjust_rows` and `Studio::adjust_set`.
 const ADJUST_ID: &str = "concat.adjust";
+
+/// The kinds the colour panel grades: a picture, and a layer, which grades
+/// everything beneath it - an adjustment layer is a layer whose chain
+/// starts with the panel's own package.
+fn graded(kind: model::ClipKind) -> bool {
+    kind.is_visual() || kind == model::ClipKind::Layer
+}
 
 /// The ease a key put on at `at` inherits: that of whichever key it joins
 /// behind, so laying a run of keys down does not alternate between shapes.
@@ -1459,6 +1521,10 @@ fn knob_range(property: model::KeyProperty) -> (f64, f64) {
         model::KeyProperty::Rotation => (-180.0, 180.0),
         model::KeyProperty::Opacity => (0.0, 1.0),
         model::KeyProperty::Volume => (-60.0, 24.0),
+        model::KeyProperty::MaskX | model::KeyProperty::MaskY => (-1.0, 1.0),
+        model::KeyProperty::MaskWidth | model::KeyProperty::MaskHeight => (0.01, 4.0),
+        model::KeyProperty::MaskRotation => (-180.0, 180.0),
+        model::KeyProperty::MaskRoundness | model::KeyProperty::MaskFeather => (0.0, 1.0),
     }
 }
 
@@ -1510,6 +1576,12 @@ fn write_keyable(clip: &mut Clip, property: model::KeyProperty, value: f64, at: 
         model::KeyProperty::Rotation => clip.rotation = value,
         model::KeyProperty::Opacity => clip.opacity = value,
         model::KeyProperty::Volume => clip.volume = value,
+        // The mask's numbers are the mask's; a number turned on a clip
+        // with none puts one on, the shape a new one starts as.
+        mask => clip
+            .mask
+            .get_or_insert_with(model::ClipMask::default)
+            .set(mask, value),
     }
 }
 
@@ -1606,6 +1678,9 @@ fn clip_commands(id: &str, before: &Clip, after: &Clip) -> Vec<Command> {
     }
     if after.crop != before.crop {
         patch.crop = Some(after.crop);
+    }
+    if after.mask != before.mask {
+        patch.mask = Some(after.mask);
     }
     commands.extend(key_commands(id, before, after));
     if after.text != before.text {
@@ -2379,7 +2454,7 @@ impl Studio {
         // the remembered language.
         i18n::select(prefs.locale.as_deref().unwrap_or(i18n::ENGLISH), &host.dirs);
         let languages = i18n::languages(&host.dirs);
-        let recents = projects::list(&host.dirs.config);
+        let recents = projects::recents(&host.dirs.config);
         let text_presets = presets::all(&host.dirs);
         let mut studio = Self {
             prefs,
@@ -2428,6 +2503,7 @@ impl Studio {
             recents,
             posters: HashMap::new(),
             posters_pending: HashSet::new(),
+            lengths: HashMap::new(),
             project_name: "Untitled project".into(),
             dock: default_dock(),
             dock_aside: crate::dock::compact_dock(),
@@ -2459,7 +2535,8 @@ impl Studio {
             drop: None,
             project_sheet: crate::panes::project::ProjectPane::default(),
             captions: crate::panes::captions::CaptionsPane::default(),
-            speech: crate::panes::speech::SpeechPane::default(),
+            speech: crate::panes::speech::SpeechPane::with_saved(&host.dirs),
+            sounds: crate::panes::sounds::SoundsPane::open(&host.dirs),
             source: None,
             meters: crate::meters::MeterFeed::default(),
             voiceover: crate::panes::voiceover::VoiceoverPane::default(),
@@ -3891,6 +3968,19 @@ impl Studio {
                 duration: LAYER_DURATION,
                 row: 0,
             }),
+            // A sound from the Audio page: not in the bin yet, so its card
+            // rides in `media` behind `sound:`, and the drop imports it.
+            "sound" => {
+                let (name, duration) = self.sound_summary(id)?;
+                Some(DropPlan {
+                    kind: ClipKind::Audio,
+                    label: name,
+                    media: format!("sound:{id}"),
+                    start: 0.0,
+                    duration: (duration as f32).max(MIN_DURATION),
+                    row: 0,
+                })
+            }
             // A look dragged from the Filters page: a layer over a span.
             // The package id rides in `media`, there being no file.
             "filter" => Some(DropPlan {
@@ -3947,6 +4037,10 @@ impl Studio {
         let Some(track_id) = self.row_track(plan.row).map(|track| track.id.clone()) else {
             return;
         };
+        if let Some(card) = plan.media.strip_prefix("sound:") {
+            self.place_card(card, Some(track_id), f64::from(plan.start));
+            return;
+        }
         let created = if plan.kind == ClipKind::Text {
             self.add_title(
                 Some(track_id),
@@ -4000,6 +4094,10 @@ impl Studio {
             return;
         };
         let start = f64::from(self.playhead.max(0.0));
+        if let Some(card) = plan.media.strip_prefix("sound:") {
+            self.place_card(card, None, start);
+            return;
+        }
         let created = if plan.kind == ClipKind::Text {
             self.add_title(None, start, f64::from(plan.duration), &plan.media)
         } else if plan.kind == ClipKind::Shape {
@@ -4149,6 +4247,26 @@ impl Studio {
         self.place_at_playhead(&format!("filter:{id}:{label}"));
     }
 
+    /// Lays an adjustment layer at the playhead - the colour panel's own
+    /// package at its defaults, over everything beneath it, so it changes
+    /// nothing until a knob moves - called `label`, and opens the
+    /// inspector on its Adjust page, where those knobs are.
+    pub fn place_adjustment_layer(&mut self, label: &str) {
+        self.place_filter_layer(ADJUST_ID, label);
+        self.inspector_jump = (self.inspector_jump.0 + 1, "Layer", "Adjust");
+    }
+
+    /// A LUT from the Adjustments page: onto the selected clip's chain -
+    /// a picture, a title, a shape or a layer - the way an effect goes on;
+    /// with nothing selected, laid at the playhead as a layer of its own.
+    pub fn apply_lut(&mut self, id: &str, label: &str) {
+        if self.sole_selection().is_some() {
+            self.apply_catalogue(id, true);
+        } else {
+            self.place_filter_layer(id, label);
+        }
+    }
+
     /// A catalogue filter or effect, applied to the selected clip's chain.
     pub fn apply_catalogue(&mut self, id: &str, video: bool) {
         let Some(clip_id) = self.sole_selection() else {
@@ -4159,7 +4277,7 @@ impl Studio {
             return;
         };
         if video
-            && !(clip.kind.is_visual()
+            && !(graded(clip.kind)
                 || matches!(clip.kind, model::ClipKind::Text | model::ClipKind::Shape))
         {
             self.notify(&t("studio.selectVideoImageText"), true);
@@ -4553,7 +4671,7 @@ impl Studio {
         let Some(clip) = self.echo_clip_mut(&id) else {
             return;
         };
-        if !clip.kind.is_visual() {
+        if !graded(clip.kind) {
             return;
         }
         let entry = match clip
@@ -4617,7 +4735,7 @@ impl Studio {
     /// is outside it.
     fn adjust_point(&self) -> Option<(Clip, f64, Option<usize>)> {
         let (clip, at) = self.key_point()?;
-        if !clip.kind.is_visual() {
+        if !graded(clip.kind) {
             return None;
         }
         let entry = clip
@@ -5239,6 +5357,7 @@ impl Studio {
             | Gesture::StageStretch { .. }
             | Gesture::TextWidth { .. }
             | Gesture::TextHeight { .. }
+            | Gesture::StageMask { .. }
             | Gesture::Paint { .. } => {}
         }
         self.gesture = gesture;
@@ -5402,6 +5521,7 @@ impl Studio {
             | Gesture::StageStretch { .. }
             | Gesture::TextWidth { .. }
             | Gesture::TextHeight { .. }
+            | Gesture::StageMask { .. }
             | Gesture::Paint { .. }) => {
                 self.gesture = other;
             }
@@ -5544,6 +5664,43 @@ impl Studio {
                 ClipField::StabilizeTripod => {
                     if let Some(stabilize) = clip.stabilize.as_mut() {
                         stabilize.tripod = value != 0.0;
+                    }
+                }
+                // The shape's place in the picker, or below zero for none.
+                // A new shape keeps where the mask was, its turn, softness
+                // and invert, and takes the new shape's own size.
+                ClipField::MaskShape => {
+                    let shape = (value >= 0.0)
+                        .then(|| model::MaskShape::ALL.get(value as usize).copied())
+                        .flatten();
+                    clip.mask = shape.map(|shape| match clip.mask {
+                        Some(held) if held.shape == shape => held,
+                        Some(held) => model::ClipMask {
+                            x: held.x,
+                            y: held.y,
+                            rotation: held.rotation,
+                            roundness: held.roundness,
+                            feather: held.feather,
+                            invert: held.invert,
+                            ..model::ClipMask::of(shape)
+                        },
+                        None => model::ClipMask::of(shape),
+                    });
+                }
+                ClipField::MaskInvert => {
+                    if let Some(mask) = clip.mask.as_mut() {
+                        mask.invert = value != 0.0;
+                    }
+                }
+                ClipField::MaskX
+                | ClipField::MaskY
+                | ClipField::MaskWidth
+                | ClipField::MaskHeight
+                | ClipField::MaskRotation
+                | ClipField::MaskRoundness
+                | ClipField::MaskFeather => {
+                    if let Some(property) = Self::key_property_of(field) {
+                        write_keyable(clip, property, model::ClipMask::clamp(property, value), at);
                     }
                 }
                 ClipField::Volume => {
@@ -6097,19 +6254,59 @@ impl Studio {
             .into_iter()
             .map(|clip| {
                 let footprint = self.footprint(clip);
-                StageItemData {
+                let selected = self.selection.iter().any(|id| id == &clip.id);
+                let mut item = StageItemData {
                     id: clip.id.as_str().into(),
                     kind: kind_of(clip),
-                    selected: self.selection.iter().any(|id| id == &clip.id),
+                    selected,
                     cx: footprint.cx as f32,
                     cy: footprint.cy as f32,
                     w: footprint.w as f32,
                     h: footprint.h as f32,
                     rotation: footprint.rotation as f32,
                     scale: clip.scale as f32,
+                    mask: -1,
+                    ..Default::default()
+                };
+                // The mask's outline and grips, on the one clip selected.
+                if selected
+                    && self.selection.len() == 1
+                    && let Some(frame) = self.mask_frame(clip)
+                {
+                    let grips = frame.grips().map(|grip| frame.fraction(grip));
+                    item.mask = model::MaskShape::ALL
+                        .iter()
+                        .position(|shape| *shape == frame.mask.shape)
+                        .map_or(-1, |index| index as i32);
+                    item.mask_path = frame.outline().into();
+                    (item.mask_cx, item.mask_cy) = grips[0];
+                    (item.mask_wx, item.mask_wy) = grips[1];
+                    (item.mask_hx, item.mask_hy) = grips[2];
+                    (item.mask_kx, item.mask_ky) = grips[3];
+                    (item.mask_rx, item.mask_ry) = grips[4];
+                    (item.mask_fx, item.mask_fy) = grips[5];
                 }
+                item
             })
             .collect()
+    }
+
+    /// The clip's mask placed in the frame at the playhead, its keyed
+    /// numbers at their ride's values; None for a clip with no mask or one
+    /// that is not a picture.
+    fn mask_frame(&self, clip: &Clip) -> Option<MaskFrame> {
+        let held = clip.mask.filter(|_| clip.kind.is_visual())?;
+        let at = place_in(clip, self.playhead);
+        let mut mask = held;
+        for property in model::KeyProperty::MASK {
+            mask.set(property, shown(clip, property, at));
+        }
+        Some(MaskFrame::new(
+            mask,
+            &self.footprint(clip),
+            self.output_size(),
+            (clip.stretch_x, clip.stretch_y),
+        ))
     }
 
     /// The topmost picture under a frame point, skipping locked lanes the
@@ -6221,8 +6418,26 @@ impl Studio {
         if self.locked(&clip.track_id) {
             return;
         }
-        let footprint = self.footprint(&clip);
         let (width, height) = self.output_size();
+        // A grip of the mask: the mask is what moves, not the picture.
+        if let Some(grip) = MaskGrip::of(grip) {
+            let Some(frame) = self.mask_frame(&clip) else {
+                return;
+            };
+            self.flush_commit();
+            self.begin_echo();
+            self.gesture = Gesture::StageMask {
+                clip: id.to_owned(),
+                grip,
+                frame,
+                from: (
+                    f64::from(x) * f64::from(width),
+                    f64::from(y) * f64::from(height),
+                ),
+            };
+            return;
+        }
+        let footprint = self.footprint(&clip);
         let centre = (
             footprint.cx * f64::from(width),
             footprint.cy * f64::from(height),
@@ -6530,6 +6745,32 @@ impl Studio {
                     clip.text.get_or_insert_with(TextStyle::default).max_height = next;
                 }
             }
+            Gesture::StageMask {
+                clip,
+                grip,
+                frame,
+                from,
+            } => {
+                let to = (x * f64::from(width), y * f64::from(height));
+                let mut next = frame.dragged(*grip, *from, to);
+                if snap && *grip == MaskGrip::Rotate {
+                    next.rotation = (next.rotation / 15.0).round() * 15.0;
+                }
+                let start = frame.mask;
+                let playhead = self.playhead;
+                if let Some(clip) = self.echo_clip_mut(clip) {
+                    let at = place_in(clip, playhead);
+                    // Only the numbers the grip moves: a keyed one the drag
+                    // left alone must not gain a key here.
+                    for property in model::KeyProperty::MASK {
+                        if let (Some(value), Some(was)) = (next.get(property), start.get(property))
+                            && value != was
+                        {
+                            write_keyable(clip, property, value, at);
+                        }
+                    }
+                }
+            }
             Gesture::StageRotate {
                 clip,
                 rotation,
@@ -6576,6 +6817,7 @@ impl Studio {
             Gesture::StageScale { clip, .. }
             | Gesture::StageRotate { clip, .. }
             | Gesture::StageStretch { clip, .. }
+            | Gesture::StageMask { clip, .. }
             | Gesture::TextWidth { clip, .. } => vec![clip],
             Gesture::Paint {
                 clip,
@@ -6644,6 +6886,16 @@ impl Studio {
             // snaps back to the ride the document still holds.
             // https://github.com/jub0t/Concat/issues/228
             commands.extend(key_commands(&id, before, after));
+            // A mask's grips move its numbers that hold still.
+            if after.mask != before.mask {
+                commands.push(Command::UpdateClip {
+                    clip_id: id.clone(),
+                    patch: ClipPatch {
+                        mask: Some(after.mask),
+                        ..Default::default()
+                    },
+                });
+            }
             // A title's wrap width, from its side grips.
             if after.text != before.text {
                 commands.push(Command::UpdateClip {
@@ -8434,13 +8686,26 @@ impl Studio {
     /// says why it could not.
     pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
         log::info!("project: opening {}", info.path);
-        if self
+        match self
             .host
             .open_projects
             .claim(&info.path, concat_api::Holder::Window)
-            .is_err()
         {
-            return Err(t("studio.projectOpenThroughRemote"));
+            Ok(()) => {}
+            Err(concat_api::Refusal::Here(_)) => {
+                return Err(t("studio.projectOpenThroughRemote"));
+            }
+            // Another process has it - a second window, an agent's
+            // `concat --mcp`, the CLI - and two saving one folder lose
+            // each other's work.
+            Err(concat_api::Refusal::Elsewhere(owner)) => {
+                let pid = owner
+                    .pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "?".to_owned());
+                log::warn!("project: {} is held by process {pid}", info.path);
+                return Err(tf("studio.projectOpenElsewhere", &[&pid]));
+            }
         }
         match Session::open_info(&info) {
             Ok(session) => {
@@ -8490,7 +8755,7 @@ impl Studio {
                 self.handle(crate::panes::Msg::Monitor(
                     crate::panes::monitor::MonitorMsg::Opened,
                 ));
-                self.recents = projects::list(&self.host.dirs.config);
+                self.recents = projects::recents(&self.host.dirs.config);
                 self.host.monitor.clear();
                 self.audition = None;
                 self.revision += 1;
@@ -8647,6 +8912,12 @@ impl Studio {
         self.stabilize_retry.clear();
         self.region_job = None;
         self.autosave.stop();
+        // The launch screen's card for this project is read again: the
+        // edit just made may have moved its first frame and its length.
+        // The old poster stays up until the new one replaces it.
+        if let Some(session) = self.session.as_ref() {
+            self.lengths.remove(session.path());
+        }
         if let Some(session) = self.session.as_ref() {
             self.host.open_projects.release(session.path());
         }
@@ -8683,16 +8954,18 @@ impl Studio {
             .playback
             .set_clips(std::path::PathBuf::new(), Vec::new());
         self.on_start = true;
-        self.recents = projects::list(&self.host.dirs.config);
+        self.recents = projects::recents(&self.host.dirs.config);
     }
 
-    /// Posters for the recents that have none yet, decoded on a worker.
+    /// Posters, and the running time, for the recents not yet looked at,
+    /// read on a worker. A missing folder has neither to give.
     fn request_posters(&mut self) {
         let wanted: Vec<String> = self
             .recents
             .iter()
-            .map(|project| project.path.clone())
-            .filter(|path| !self.posters.contains_key(path) && !self.posters_pending.contains(path))
+            .filter(|recent| recent.present)
+            .map(|recent| recent.info.path.clone())
+            .filter(|path| !self.lengths.contains_key(path) && !self.posters_pending.contains(path))
             .collect();
         for path in wanted {
             self.posters_pending.insert(path.clone());
@@ -8702,13 +8975,15 @@ impl Studio {
                     // A project with no poster - nothing on it, or nothing
                     // but black - keeps the film mark; see `poster_frame`.
                     let made = media::poster_frame(&path).is_ok();
-                    (path, made.then_some(cached))
+                    let length = media::timeline_seconds(&path);
+                    (path, made.then_some(cached), length)
                 },
-                |studio, _, _, (path, cached)| {
+                |studio, _, _, (path, cached, length)| {
                     studio.posters_pending.remove(&path);
                     if let Some(poster) = cached.and_then(|cached| image_at(&cached)) {
-                        studio.posters.insert(path, poster);
+                        studio.posters.insert(path.clone(), poster);
                     }
+                    studio.lengths.insert(path, length);
                 },
             );
         }
@@ -8749,6 +9024,11 @@ impl Studio {
                 let mut pane = std::mem::take(&mut self.voiceover);
                 pane.update(msg, self);
                 self.voiceover = pane;
+            }
+            crate::panes::Msg::Sounds(msg) => {
+                let mut pane = std::mem::take(&mut self.sounds);
+                pane.update(msg, self);
+                self.sounds = pane;
             }
             crate::panes::Msg::Relink(msg) => {
                 let mut pane = std::mem::take(&mut self.relink);
@@ -8967,25 +9247,25 @@ impl Studio {
         true
     }
 
-    /// Imports one or more `.cube` tables as looks: each becomes a package
-    /// folder under `looks_dir` - a manifest that names the table, a shader
-    /// that reads it, the table (see `concat_effects::looks`) - and the
-    /// catalogue is rebuilt so the Filters page shows them, their cards
-    /// drawn by their own shaders.
     /// Asks for `.cube` files to import as looks. The dialog is asked with
-    /// the studio unborrowed, and the files come back to [`import_luts`];
-    /// see `host::after_dialog`.
+    /// the studio unborrowed - on a phone it is the system's picker, which
+    /// answers later - and the files come back to [`import_luts`]; see
+    /// `host::pick_files_then`.
     ///
     /// [`import_luts`]: Studio::import_luts
     pub fn import_lut() {
-        let (title, family) = (t("studio.importLut"), t("studio.lut"));
-        crate::host::after_dialog(
-            move || crate::platform::pick_files(&title, Some((family.as_str(), &["cube"]))),
+        crate::host::pick_files_then(
+            t("studio.importLut"),
+            Some((t("studio.lut"), &["cube"])),
             |studio, _, _, paths| studio.import_luts(paths),
         );
     }
 
-    /// Imports `.cube` files as looks, and says how many arrived.
+    /// Imports one or more `.cube` tables as looks: each becomes a package
+    /// folder under `looks_dir` - a manifest that names the table, a shader
+    /// that reads it, the table (see `concat_effects::looks`) - and the
+    /// catalogue is rebuilt so the Adjustments page's LUTs shelf shows
+    /// them, their cards drawn by their own shaders. Says how many arrived.
     pub fn import_luts(&mut self, paths: Vec<std::path::PathBuf>) {
         let dir = Self::looks_dir(&self.host.dirs);
         let mut imported = 0;
@@ -9011,8 +9291,7 @@ impl Studio {
         if self.reload_packages(false) > 0 {
             return;
         }
-        self.library[0].query.clear();
-        self.notify(&tf("studio.importedLooksFindThem", &[&imported]), false);
+        self.notify(&tf("studio.importedLutsFindThem", &[&imported]), false);
     }
 
     pub fn save_template(&mut self) {
@@ -9501,7 +9780,7 @@ impl Studio {
         sync(
             &models.adjust_params,
             match self.sole_selection().and_then(|id| self.clip(&id)) {
-                Some(clip) if clip.kind.is_visual() => {
+                Some(clip) if graded(clip.kind) => {
                     adjust_rows(&clip.video_effects, self.key_point().map(|(_, at)| at))
                 }
                 _ => Vec::new(),
@@ -9515,7 +9794,7 @@ impl Studio {
         let (visual_wheels, visual_curves) =
             clip.map_or_else(Default::default, |clip| chain_grading(&clip.video_effects));
         let (adjust_wheels, adjust_curves) = match (clip, Catalogue::builtin().get(ADJUST_ID)) {
-            (Some(clip), Some(package)) if clip.kind.is_visual() => grading_rows(
+            (Some(clip), Some(package)) if graded(clip.kind) => grading_rows(
                 package,
                 clip.video_effects
                     .iter()
@@ -9669,6 +9948,13 @@ impl Studio {
             ClipField::Rotation => model::KeyProperty::Rotation,
             ClipField::Opacity => model::KeyProperty::Opacity,
             ClipField::Volume => model::KeyProperty::Volume,
+            ClipField::MaskX => model::KeyProperty::MaskX,
+            ClipField::MaskY => model::KeyProperty::MaskY,
+            ClipField::MaskWidth => model::KeyProperty::MaskWidth,
+            ClipField::MaskHeight => model::KeyProperty::MaskHeight,
+            ClipField::MaskRotation => model::KeyProperty::MaskRotation,
+            ClipField::MaskRoundness => model::KeyProperty::MaskRoundness,
+            ClipField::MaskFeather => model::KeyProperty::MaskFeather,
             _ => return None,
         })
     }
@@ -9781,6 +10067,11 @@ impl Studio {
         };
         let mut rows = Vec::new();
         for property in model::KeyProperty::ALL {
+            // The mask's numbers are rows only while there is a mask, or
+            // keys left from one: seven rows of nothing otherwise.
+            if property.is_mask() && clip.mask.is_none() && !clip.is_keyed(property) {
+                continue;
+            }
             // The same ranges and units as the inspector's knobs. The level
             // knob speaks decibels, floored where silence is.
             let (label, minimum, maximum, step, default_value, fmt, unit, unit_scale) =
@@ -9844,6 +10135,76 @@ impl Studio {
                         ParamFormat::Gain,
                         "",
                         1.0,
+                    ),
+                    model::KeyProperty::MaskX => (
+                        tf("mask.row", &[&t("common.positionX")]),
+                        -1.0,
+                        1.0,
+                        0.005,
+                        0.0,
+                        ParamFormat::Centred,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::MaskY => (
+                        tf("mask.row", &[&t("common.positionY")]),
+                        -1.0,
+                        1.0,
+                        0.005,
+                        0.0,
+                        ParamFormat::Centred,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::MaskWidth => (
+                        tf("mask.row", &[&t("common.width")]),
+                        0.01,
+                        4.0,
+                        0.01,
+                        0.66,
+                        ParamFormat::Fraction,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::MaskHeight => (
+                        tf("mask.row", &[&t("common.height")]),
+                        0.01,
+                        4.0,
+                        0.01,
+                        0.66,
+                        ParamFormat::Fraction,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::MaskRotation => (
+                        tf("mask.row", &[&t("common.rotation")]),
+                        -180.0,
+                        180.0,
+                        1.0,
+                        0.0,
+                        ParamFormat::Degrees,
+                        "°",
+                        1.0,
+                    ),
+                    model::KeyProperty::MaskRoundness => (
+                        tf("mask.row", &[&t("mask.roundness")]),
+                        0.0,
+                        1.0,
+                        0.01,
+                        0.0,
+                        ParamFormat::Fraction,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::MaskFeather => (
+                        tf("mask.row", &[&t("clipInspector.feather")]),
+                        0.0,
+                        1.0,
+                        0.01,
+                        0.0,
+                        ParamFormat::Fraction,
+                        "%",
+                        100.0,
                     ),
                 };
             let to_knob = |value: f64| knob_value(property, value);
@@ -10539,6 +10900,18 @@ impl Studio {
             crop_top: clip.crop.map(|crop| crop.top as f32).unwrap_or(0.0),
             crop_right: clip.crop.map(|crop| crop.right as f32).unwrap_or(0.0),
             crop_bottom: clip.crop.map(|crop| crop.bottom as f32).unwrap_or(0.0),
+            mask: clip
+                .mask
+                .and_then(|mask| model::MaskShape::ALL.iter().position(|s| *s == mask.shape))
+                .map_or(-1, |index| index as i32),
+            mask_invert: clip.mask.is_some_and(|mask| mask.invert),
+            mask_x: shown(clip, model::KeyProperty::MaskX, at) as f32,
+            mask_y: shown(clip, model::KeyProperty::MaskY, at) as f32,
+            mask_width: shown(clip, model::KeyProperty::MaskWidth, at) as f32,
+            mask_height: shown(clip, model::KeyProperty::MaskHeight, at) as f32,
+            mask_rotation: shown(clip, model::KeyProperty::MaskRotation, at) as f32,
+            mask_roundness: shown(clip, model::KeyProperty::MaskRoundness, at) as f32,
+            mask_feather: shown(clip, model::KeyProperty::MaskFeather, at) as f32,
             fade_in: clip.fade_in as f32,
             fade_out: clip.fade_out as f32,
             content: text.content.as_str().into(),
@@ -10883,21 +11256,46 @@ impl Studio {
             favourites: starred.clone(),
         };
         if self.shelf_stamp.borrow().as_ref() != Some(&stamp) {
+            // The looks made from tables are the Adjustments page's, not
+            // the Filters page's.
             let (groups, entries) = shelves(
                 SHELF_KINDS[0],
                 &self.library[0],
                 starred,
                 &self.look_art,
                 &self.card_paths,
+                |package| !is_lut(package),
             );
             sync(&models.filter_groups, groups);
             sync(&models.catalogue_filters, entries);
+            // Every one of them, on every shelf: the user's own tables
+            // are one short list, browsed whole.
+            let every = LibraryView {
+                group: -1,
+                ..LibraryView::default()
+            };
+            let (_, entries) = shelves(
+                SHELF_KINDS[0],
+                &every,
+                starred,
+                &self.look_art,
+                &self.card_paths,
+                is_lut,
+            );
+            sync(&models.catalogue_luts, entries);
+            app.global::<Editor>().set_adjustment_art(
+                Catalogue::builtin()
+                    .get(ADJUST_ID)
+                    .map(|package| package_art(package, &self.look_art, &self.card_paths))
+                    .unwrap_or_default(),
+            );
             let (groups, entries) = shelves(
                 SHELF_KINDS[1],
                 &self.library[1],
                 starred,
                 &self.look_art,
                 &self.card_paths,
+                |_| true,
             );
             sync(&models.effect_groups, groups);
             sync(&models.catalogue_effects, entries);
@@ -10907,6 +11305,7 @@ impl Studio {
                 starred,
                 &self.look_art,
                 &self.card_paths,
+                |_| true,
             );
             sync(&models.audio_groups, groups);
             sync(&models.catalogue_audio, entries);
@@ -10916,6 +11315,7 @@ impl Studio {
                 starred,
                 &self.look_art,
                 &self.card_paths,
+                |_| true,
             );
             sync(&models.transition_groups, groups);
             sync(&models.catalogue_transitions, entries);
@@ -10950,22 +11350,40 @@ impl Studio {
             failed: self.toast.failed,
         });
         app.set_start(self.start.data());
+        app.set_recents_total(self.recents.len() as i32);
         sync(
             &models.recents,
-            self.recents
-                .iter()
-                .map(|project| RecentProjectData {
-                    path: project.path.as_str().into(),
-                    name: project.name.as_str().into(),
-                    detail: format!(
-                        "{} x {} · {:.2} fps",
-                        project.width,
-                        project.height,
-                        project.rate_num as f32 / project.rate_den.max(1) as f32
-                    )
-                    .into(),
-                    when: when_phrase(project.opened_at).into(),
-                    poster: self.posters.get(&project.path).cloned().unwrap_or_default(),
+            crate::panes::start::shown(&self.recents, &self.start.query, self.start.sort)
+                .into_iter()
+                .map(|recent| {
+                    let project = &recent.info;
+                    RecentProjectData {
+                        path: project.path.as_str().into(),
+                        name: project.name.as_str().into(),
+                        detail: format!(
+                            "{} × {} · {}",
+                            project.width,
+                            project.height,
+                            rate_label(project.rate_num, project.rate_den)
+                        )
+                        .into(),
+                        // When it was last worked on, which is what a
+                        // person means by recent; when it was last opened
+                        // where the file keeps no time.
+                        when: when_phrase(recent.edited_at.unwrap_or(project.opened_at)).into(),
+                        length: self
+                            .lengths
+                            .get(&project.path)
+                            .copied()
+                            .flatten()
+                            .filter(|seconds| *seconds > 0.0)
+                            .map(running_time)
+                            .unwrap_or_default()
+                            .into(),
+                        ratio: project.width as f32 / project.height.max(1) as f32,
+                        missing: !recent.present,
+                        poster: self.posters.get(&project.path).cloned().unwrap_or_default(),
+                    }
                 })
                 .collect(),
         );
@@ -11108,6 +11526,7 @@ impl Studio {
         );
         sync(&models.speakers, self.speech.speaker_rows());
         sync(&models.speaker_details, self.speech.speaker_detail_rows());
+        sync(&models.speaker_avatars, self.speech.speaker_avatar_rows());
         sync(&models.speech_samples, self.speech.sample_rows(self));
         sync(
             &models.speech_sample_waves,
@@ -11118,6 +11537,28 @@ impl Studio {
             self.speech.sample_detail_rows(self),
         );
         app.set_speech(self.speech.data(self));
+        // The Audio page.
+        sync(&models.sounds_mine, self.sounds.mine());
+        sync(&models.sounds_concat, self.sounds.concat_rows());
+        {
+            use crate::panes::sounds::ConcatState;
+            let page = app.global::<crate::ui::Sounds>();
+            page.set_concat_state(match self.sounds.concat {
+                ConcatState::Idle => 0,
+                ConcatState::Loading => 1,
+                ConcatState::Ready => 2,
+                ConcatState::Soon => 3,
+                ConcatState::Offline => 4,
+            });
+            page.set_concat_category(self.sounds.category as i32);
+        }
+        app.global::<crate::ui::Sounds>()
+            .set_importing(self.sounds.importing);
+        let (saved, builtin, styles, ready) = self.voice_cards();
+        sync(&models.voices_saved, saved);
+        sync(&models.voices_builtin, builtin);
+        sync(&models.voice_styles, styles);
+        app.global::<crate::ui::Sounds>().set_voices_ready(ready);
         self.publish_source(app);
         sync(&models.voiceover_devices, self.voiceover.device_rows());
         app.set_voiceover(self.voiceover.data(self));
