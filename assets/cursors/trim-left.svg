@@ -13,13 +13,16 @@
        Flat and unoutlined by design: the triangle is the accent (Lime by
        default - Theme.accent; a cursor is a file and cannot follow a custom
        accent) and the bracket, twice the triangle's height yet finer than it
-       - 22 tall against 10, with 2-wide arms - white. The dropped copy
-       beneath is the only edge there is, so the white still reads over a
-       bright filmstrip or a light theme. -->
+       - 22 tall against 10, with 2-wide arms reaching 5 across the triangle's
+       base - white. The arms are the whole difference between a bracket and
+       two loose lines beside a spine: any shorter and the nubs read as lines
+       at pointer size, which is what the first cut of this art drew and what
+       nobody read as an edge. The dropped copy beneath is the only edge there
+       is, so the white still reads over a bright filmstrip or a light theme. -->
   <g transform="translate(0, 1)" opacity="0.42" fill="#05070a">
     <path d="M1 12 L10 7 L10 17 Z"/>
-    <path d="M14 1 H16 V23 H14 V21 H11.5 V3 H14 Z"/>
+    <path d="M14 1 H16 V23 H14 V21 H9 V3 H14 Z"/>
   </g>
   <path d="M1 12 L10 7 L10 17 Z" fill="#cbf53f"/>
-  <path d="M14 1 H16 V23 H14 V21 H11.5 V3 H14 Z" fill="#ffffff"/>
+  <path d="M14 1 H16 V23 H14 V21 H9 V3 H14 Z" fill="#ffffff"/>
 </svg>
