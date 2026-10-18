@@ -635,21 +635,21 @@ component Clip inherits Rectangle {
         // further - so these three are ours, drawn, which is the same
         // cursor on every platform.
         //
-        // And they share one hotspot, (16, 12) on a 32-wide canvas: the
+        // And they share one hotspot, (18, 12) on a 36-wide canvas: the
         // pointer sits at the same place in each file, so a swap at a zone
         // border redraws the cursor in place. Three canvases anchored at
         // their own ends and middle made the whole icon lurch sideways on
         // every border crossed - the shifting nobody wants from a pointer.
         mouse-cursor: root.tool == TimelineTool.split ? MouseCursor.crosshair
-            : root.edge-at == 5 ? custom(@image-url("../../../../../assets/cursors/trim-left.svg"), 16, 12)
-            : root.edge-at == 6 ? custom(@image-url("../../../../../assets/cursors/trim-right.svg"), 16, 12)
+            : root.edge-at == 5 ? custom(@image-url("../../../../../assets/cursors/trim-left.svg"), 18, 12)
+            : root.edge-at == 6 ? custom(@image-url("../../../../../assets/cursors/trim-right.svg"), 18, 12)
             : root.edge-at == 0 ? (root.item.join-before
-                ? custom(@image-url("../../../../../assets/cursors/trim-right.svg"), 16, 12)
-                : custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 16, 12))
+                ? custom(@image-url("../../../../../assets/cursors/trim-right.svg"), 18, 12)
+                : custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 18, 12))
             : root.edge-at == 1 ? (root.item.join-after
-                ? custom(@image-url("../../../../../assets/cursors/trim-left.svg"), 16, 12)
-                : custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 16, 12))
-            : root.edge-at >= 3 ? custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 16, 12)
+                ? custom(@image-url("../../../../../assets/cursors/trim-left.svg"), 18, 12)
+                : custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 18, 12))
+            : root.edge-at >= 3 ? custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 18, 12)
             : MouseCursor.grab;
 
         changed mouse-x => {
