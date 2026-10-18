@@ -12235,9 +12235,9 @@ impl Studio {
     }
 
     /// What [`Self::select_where`] takes: clips on no locked lane that
-    /// lie wholly on `side` of `at` — or every unlocked clip when no
-    /// side is. A clip the line runs through is where the line is, not
-    /// to a side of it, so it joins neither.
+    /// lie on `side` of `at` — or every unlocked clip when no side is.
+    /// A clip the line runs through reaches across the line, so it is
+    /// to both sides and joins either pick.
     fn side_selection(
         timeline: &Timeline,
         at: f64,
@@ -12250,8 +12250,8 @@ impl Studio {
             .filter(|clip| !locked(&clip.track_id))
             .filter(|clip| match side {
                 None => true,
-                Some(PlayheadSide::Left) => clip.start + clip.duration <= at,
-                Some(PlayheadSide::Right) => clip.start >= at,
+                Some(PlayheadSide::Left) => clip.start < at,
+                Some(PlayheadSide::Right) => clip.start + clip.duration > at,
             })
             .map(|clip| clip.id.clone())
             .collect()
@@ -12703,12 +12703,12 @@ mod tests {
         assert!(Studio::split_victims(&timeline, 40.0, &[], open).is_empty());
     }
 
-    /// `[` and `]` take whole clips on one side of the playhead on open
-    /// lanes only: a clip the playhead runs through is where the line
-    /// is rather than to a side of it, and a locked lane stays out of
-    /// both sides — the split's rule for locks, kept on the selection.
+    /// `[` and `]` take clips on one side of the playhead on open
+    /// lanes only: the clip the line runs through reaches both ways and
+    /// joins either pick, and a locked lane stays out of both sides -
+    /// the split's rule for locks, kept on the selection.
     #[test]
-    fn a_side_selection_keeps_to_whole_clips_on_open_lanes() {
+    fn a_side_selection_takes_the_playheads_clip_too_on_open_lanes() {
         use std::sync::Arc;
 
         use concat_project::model::{Clip, ClipKind, Timeline};
@@ -12744,15 +12744,17 @@ mod tests {
             Studio::side_selection(&timeline, 5.0, None, locked),
             ["a", "b", "c", "e", "f"]
         );
-        // Left: ends at or before the line — and only that.
+        // Left: begins before the line — and the one running through
+        // it reaches back over the line, so it is to the left too.
         assert_eq!(
             Studio::side_selection(&timeline, 5.0, Some(PlayheadSide::Left), locked),
-            ["a", "e"]
+            ["a", "c", "e"]
         );
-        // Right: starts at or after it — still never the locked lane's.
+        // Right: ends after the line — still never the locked lane's;
+        // the clip ending on it is wholly left and stays out.
         assert_eq!(
             Studio::side_selection(&timeline, 5.0, Some(PlayheadSide::Right), locked),
-            ["b", "f"]
+            ["b", "c", "f"]
         );
     }
 
