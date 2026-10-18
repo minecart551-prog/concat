@@ -27,8 +27,12 @@ pub mod editor;
 pub mod model;
 pub mod placement;
 pub mod speed;
+pub mod srt;
 
-pub use commands::{Command, CommandError, Outcome, why_not_merge};
+pub use commands::{
+    Command, CommandError, Outcome, PlayheadSide, consolidation_clips, delete_to_playhead,
+    why_not_merge,
+};
 pub use doc::{DOCUMENT_VERSION, DocumentSettings, document_version, from_document, to_document};
 pub use editor::{Editor, RetiredFields};
 pub use model::Project;
@@ -37,7 +41,9 @@ pub use model::Project;
 mod tests {
     use serde_json::json;
 
-    use crate::commands::{ClipMove, ClipPatch, Command, NewMedia, TrackFlag, TrimEdge};
+    use crate::commands::{
+        ClipMove, ClipPatch, Command, NewMedia, PlayheadSide, TrackFlag, TrimEdge,
+    };
     use crate::doc::DocumentSettings;
     use crate::editor::Editor;
     use crate::model::{
@@ -276,6 +282,288 @@ mod tests {
         assert_eq!(loaded.project().active().video.color_space, ColorSpace::Pq);
         assert_eq!(loaded.project().media[1].color_space, ColorSpace::Pq);
         assert!(loaded.project().media[0].color_space.is_sdr());
+    }
+
+    /// A document from before backgrounds opens with none, on the timeline
+    /// and on every clip, and a project that never chooses one writes the
+    /// document it always wrote. One that does choose one reads it back,
+    /// and a kind from a newer build opens as none rather than failing the
+    /// load.
+    #[test]
+    fn a_background_is_absent_until_chosen_and_round_trips() {
+        use crate::model::Background;
+        let (mut editor, _, clip_id) = fixture();
+        let document = editor.to_document(&settings());
+        let timeline = &document["timelines"][0];
+        assert!(timeline.get("background").is_none(), "{timeline}");
+        assert!(timeline["clips"][0].get("background").is_none());
+        let loaded = Editor::from_document(&document).expect("loads");
+        assert!(loaded.project().active().background.is_none());
+        assert_eq!(loaded.project().active().clips[0].background, None);
+
+        let timeline_id = editor.project().active_timeline_id.clone();
+        editor
+            .apply(Command::SetTimelineBackground {
+                timeline_id: timeline_id.clone(),
+                background: Background::Blur { amount: 3.0 },
+            })
+            .expect("sets");
+        assert_eq!(
+            editor.project().active().background,
+            Background::Blur { amount: 1.0 },
+            "held to 0..=1"
+        );
+        editor
+            .apply(Command::UpdateClip {
+                clip_id: clip_id.clone(),
+                patch: ClipPatch {
+                    background: Some(Some(Background::Color {
+                        color: "#FF8000".to_owned(),
+                    })),
+                    ..ClipPatch::default()
+                },
+            })
+            .expect("sets");
+        let mut document = editor.to_document(&settings());
+        assert_eq!(
+            document["timelines"][0]["background"],
+            json!({ "kind": "blur", "amount": 1.0 })
+        );
+        assert_eq!(
+            document["timelines"][0]["clips"][0]["background"],
+            json!({ "kind": "color", "color": "#ff8000" })
+        );
+        let loaded = Editor::from_document(&document).expect("loads");
+        assert_eq!(loaded.project(), editor.project());
+
+        document["timelines"][0]["background"] = json!({ "kind": "hologram", "depth": 4 });
+        document["timelines"][0]["clips"][0]["background"] = json!({ "kind": "hologram" });
+        let loaded = Editor::from_document(&document).expect("loads");
+        assert!(loaded.project().active().background.is_none());
+        assert_eq!(loaded.project().active().clips[0].background, None);
+
+        // Null on the wire is "follow the timeline's" again.
+        let follow: Command = serde_json::from_value(json!({
+            "op": "updateClip",
+            "clipId": clip_id,
+            "patch": { "background": null }
+        }))
+        .expect("parses");
+        assert!(editor.apply(follow).expect("applies").applied);
+        assert_eq!(editor.project().active().clips[0].background, None);
+    }
+
+    /// Only a picture on the lowest lane that holds pictures has a
+    /// background: its own over the timeline's, black meaning black. A
+    /// title, a picture on a lane above, and a lane of music underneath
+    /// change nothing.
+    #[test]
+    fn the_background_belongs_to_the_lowest_picture_lane() {
+        use crate::model::Background;
+        let mut editor = Editor::new();
+        let video = editor
+            .apply(media("/a.mp4", 10.0, true))
+            .expect("adds")
+            .created_id
+            .expect("id");
+        let Command::AddMedia { mut item } = media("/song.mp3", 10.0, true) else {
+            unreachable!()
+        };
+        item.kind = MediaKind::Audio;
+        item.width = None;
+        item.height = None;
+        let song = editor
+            .apply(Command::AddMedia { item })
+            .expect("adds")
+            .created_id
+            .expect("id");
+        let tracks: Vec<String> = editor
+            .project()
+            .active()
+            .tracks
+            .iter()
+            .map(|track| track.id.clone())
+            .collect();
+        let add = |editor: &mut Editor, media_id: &str, track: usize| {
+            editor
+                .apply(Command::AddClip {
+                    media_id: media_id.to_owned(),
+                    track_id: tracks[track].clone(),
+                    start: 0.0,
+                    ripple: false,
+                })
+                .expect("adds")
+                .created_id
+                .expect("id")
+        };
+        let music = add(&mut editor, &song, 0);
+        let main = add(&mut editor, &video, 1);
+        let overlay = add(&mut editor, &video, 2);
+        let timeline_id = editor.project().active_timeline_id.clone();
+        editor
+            .apply(Command::SetTimelineBackground {
+                timeline_id,
+                background: Background::Blur { amount: 0.5 },
+            })
+            .expect("sets");
+
+        let timeline = editor.project().active();
+        assert_eq!(timeline.background_lane(), Some(tracks[1].as_str()));
+        let of = |id: &str| timeline.background_of(timeline.clip(id).expect("a clip"));
+        assert_eq!(of(&main), Some(&Background::Blur { amount: 0.5 }));
+        assert_eq!(of(&overlay), None);
+        assert_eq!(of(&music), None);
+
+        editor
+            .apply(Command::UpdateClip {
+                clip_id: main.clone(),
+                patch: ClipPatch {
+                    background: Some(Some(Background::None)),
+                    ..ClipPatch::default()
+                },
+            })
+            .expect("sets");
+        let timeline = editor.project().active();
+        assert_eq!(
+            timeline.background_of(timeline.clip(&main).expect("a clip")),
+            None,
+            "the clip's own black wins over the timeline's blur"
+        );
+    }
+
+    /// Fit is the size every picture starts at; fill covers the frame. A
+    /// wide shot in a tall frame fills at the frame's height over the
+    /// picture's fitted height, and both centre and unstretch the picture
+    /// as one undo step.
+    #[test]
+    fn fit_and_fill_size_a_picture_to_the_frame() {
+        use crate::model::{Framing, VideoSettings};
+        let (mut editor, _, clip_id) = fixture();
+        let timeline_id = editor.project().active_timeline_id.clone();
+        editor
+            .apply(Command::SetTimelineVideo {
+                timeline_id,
+                video: VideoSettings {
+                    width: 1080,
+                    height: 1920,
+                    ..VideoSettings::default()
+                },
+            })
+            .expect("goes vertical");
+        editor
+            .apply(Command::SetClipTransform {
+                clip_id: clip_id.clone(),
+                scale: Some(0.5),
+                offset_x: Some(0.2),
+                offset_y: None,
+                rotation: None,
+                stretch_x: Some(1.5),
+                stretch_y: None,
+            })
+            .expect("moves");
+        editor.end_gesture();
+
+        let frame = |framing| Command::FrameClip {
+            clip_id: clip_id.clone(),
+            framing,
+            at: 0.0,
+        };
+        assert!(editor.apply(frame(Framing::Fill)).expect("fills").applied);
+        let clip = &editor.project().active().clips[0];
+        // 1920x1080 fitted into 1080x1920 is 1080x607.5; covering the
+        // frame's 1920 rows takes 1920 / 607.5.
+        assert!((clip.scale - 1920.0 / 607.5).abs() < 1e-5, "{}", clip.scale);
+        assert_eq!((clip.offset_x, clip.offset_y), (0.0, 0.0));
+        assert_eq!((clip.stretch_x, clip.stretch_y), (1.0, 1.0));
+
+        editor.apply(frame(Framing::Fit)).expect("fits");
+        assert_eq!(editor.project().active().clips[0].scale, 1.0);
+
+        editor.undo();
+        editor.undo();
+        let clip = &editor.project().active().clips[0];
+        assert_eq!((clip.scale, clip.offset_x, clip.stretch_x), (0.5, 0.2, 1.5));
+    }
+
+    /// A scale with keys keeps them: the fill lands as a key where the
+    /// playhead is, and the keys either side ride on as they were.
+    #[test]
+    fn a_fill_on_a_keyed_scale_is_a_key() {
+        use crate::model::{Framing, KeyEase, KeyProperty};
+        let (mut editor, _, clip_id) = fixture();
+        for (at, value) in [(0.0, 1.0), (1.0, 2.0)] {
+            editor
+                .apply(Command::SetClipKey {
+                    clip_id: clip_id.clone(),
+                    property: KeyProperty::Scale,
+                    at,
+                    value,
+                    ease: KeyEase::LINEAR,
+                })
+                .expect("keys");
+        }
+        editor
+            .apply(Command::FrameClip {
+                clip_id: clip_id.clone(),
+                framing: Framing::Fill,
+                at: 0.5,
+            })
+            .expect("fills");
+        let clip = &editor.project().active().clips[0];
+        let keys: Vec<(f64, f64)> = clip
+            .keys_on(KeyProperty::Scale)
+            .map(|key| (key.at, key.value))
+            .collect();
+        // A 16:9 picture in a 16:9 frame already covers it.
+        assert_eq!(keys, vec![(0.0, 1.0), (0.5, 1.0), (1.0, 2.0)]);
+        assert_eq!(clip.scale, 1.0, "the constant under the keys is untouched");
+    }
+
+    /// A turned picture fills further and fits smaller, and a crop is what
+    /// is sized: a picture cropped to a square fills a square frame at one.
+    #[test]
+    fn framing_follows_the_turn_and_the_crop() {
+        use crate::model::{Framing, framing_scale};
+        let sixteen_nine = (1920.0, 1080.0);
+        let square = (1000.0, 1000.0);
+        assert_eq!(
+            framing_scale(Framing::Fit, sixteen_nine, square, 0.0),
+            Some(1.0)
+        );
+        assert_eq!(
+            framing_scale(Framing::Fill, sixteen_nine, square, 0.0),
+            Some(1.777_778)
+        );
+        // On its side, the 1000x562.5 fitted picture is 562.5 wide: it
+        // fits as it was and fills at 1000 / 562.5.
+        assert_eq!(
+            framing_scale(Framing::Fit, sixteen_nine, square, 90.0),
+            Some(1.0)
+        );
+        assert_eq!(
+            framing_scale(Framing::Fill, sixteen_nine, square, 90.0),
+            Some(1.777_778)
+        );
+        let turned = framing_scale(Framing::Fit, square, square, 45.0).expect("a size");
+        assert!((turned - 1.0 / 2f64.sqrt()).abs() < 1e-6, "{turned}");
+        assert_eq!(framing_scale(Framing::Fill, (0.0, 1.0), square, 0.0), None);
+
+        let mut clip = crate::model::Clip::blank("c", "t", ClipKind::Video, "c", 0.0, 1.0);
+        clip.crop = Some(crate::model::Crop {
+            left: 0.21875,
+            top: 0.0,
+            right: 0.21875,
+            bottom: 0.0,
+        });
+        assert_eq!(
+            clip.framing_scale(Framing::Fill, (Some(1920), Some(1080)), (1000, 1000), 0.0),
+            Some(1.0)
+        );
+        clip.kind = ClipKind::Text;
+        assert_eq!(
+            clip.framing_scale(Framing::Fill, (Some(1920), Some(1080)), (1000, 1000), 0.0),
+            None
+        );
     }
 
     /// Editor with one media item and one clip at [0, 10) on track one.
@@ -1347,6 +1635,245 @@ mod tests {
         let editor = Editor::new();
         assert_eq!(editor.project().timelines.len(), 1);
         assert_eq!(editor.project().active().tracks.len(), 4);
+    }
+
+    #[test]
+    fn consolidation_replaces_many_edited_pieces_and_undo_restores_everything() {
+        let (mut editor, media_id, first) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let mut ids = vec![first.clone()];
+        ids.extend(lane(&mut editor, &media_id, &track, &[10.0, 20.0]));
+        for (n, id) in ids.iter().enumerate() {
+            let clip = editor.project_mut().active_mut().clip_mut(id).unwrap();
+            clip.source_start = n as f64 * 15.0;
+            clip.scale = 1.5;
+            clip.volume = 0.6;
+            clip.speed = 1.2;
+        }
+        let before = editor.project().clone();
+        let Command::AddMedia { mut item } = media("/project/media/merged.mp4", 30.0, true) else {
+            unreachable!()
+        };
+        item.name = "Merged clips".into();
+        let command: Command = serde_json::from_value(json!({
+            "op": "consolidateClips", "clipIds": ids.iter().rev().collect::<Vec<_>>(), "item": item
+        }))
+        .expect("the consolidation command is available to API callers too");
+        let outcome = editor.apply(command).expect("consolidates");
+        assert_eq!(outcome.created_id.as_deref(), Some(first.as_str()));
+        let timeline = editor.project().active();
+        assert_eq!(timeline.clips.len(), 1);
+        let merged = timeline.clip(&first).unwrap();
+        assert_eq!(
+            (merged.start, merged.duration, merged.source_start),
+            (0.0, 30.0, 0.0)
+        );
+        assert_eq!((merged.scale, merged.volume, merged.speed), (1.0, 1.0, 1.0));
+        assert_eq!(
+            editor.project().media.len(),
+            2,
+            "original media stays in the bin"
+        );
+        let after = editor.project().clone();
+        editor.undo();
+        assert_eq!(editor.project(), &before);
+        editor.redo();
+        assert_eq!(editor.project(), &after);
+        let document = editor.to_document(&settings());
+        assert_eq!(Editor::from_document(&document).unwrap().project(), &after);
+    }
+
+    #[test]
+    fn consolidation_refuses_invalid_selections_without_changing_the_edit() {
+        let (mut editor, media_id, first) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let rest = lane(&mut editor, &media_id, &track, &[10.0, 20.0]);
+        let Command::AddMedia { item } = media("/merged.mp4", 30.0, true) else {
+            unreachable!()
+        };
+        for ids in [
+            vec![first.clone()],
+            vec![first.clone(), first.clone()],
+            vec![first.clone(), "gone".into()],
+            vec![first.clone(), rest[1].clone()], // Would cover an unselected clip.
+        ] {
+            let before = editor.project().clone();
+            assert!(
+                editor
+                    .apply(Command::ConsolidateClips {
+                        clip_ids: ids,
+                        item: item.clone()
+                    })
+                    .is_err()
+            );
+            assert_eq!(editor.project(), &before);
+        }
+        let other = editor.project().active().tracks[1].id.clone();
+        editor
+            .project_mut()
+            .active_mut()
+            .clip_mut(&rest[0])
+            .unwrap()
+            .track_id = other;
+        assert!(
+            crate::consolidation_clips(
+                editor.project().active(),
+                &[first.clone(), rest[0].clone()]
+            )
+            .is_err()
+        );
+        editor
+            .project_mut()
+            .active_mut()
+            .clip_mut(&rest[0])
+            .unwrap()
+            .track_id = track;
+        editor
+            .project_mut()
+            .active_mut()
+            .clip_mut(&rest[0])
+            .unwrap()
+            .kind = ClipKind::Audio;
+        assert!(
+            crate::consolidation_clips(editor.project().active(), &[first, rest[0].clone()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn consolidation_accepts_different_sources_and_preserves_its_span_and_neighbours() {
+        let (mut editor, _, first) = fixture();
+        let second_media = editor
+            .apply(media("/b.mp4", 10.0, false))
+            .unwrap()
+            .created_id
+            .unwrap();
+        let track = editor.project().active().tracks[0].id.clone();
+        let others = lane(&mut editor, &second_media, &track, &[12.0, 30.0]);
+        let neighbour = editor.project().active().clip(&others[1]).unwrap().clone();
+        let Command::AddMedia { item } = media("/merged.mp4", 22.0, true) else {
+            unreachable!()
+        };
+        editor
+            .apply(Command::ConsolidateClips {
+                clip_ids: vec![others[0].clone(), first.clone()],
+                item,
+            })
+            .unwrap();
+        let timeline = editor.project().active();
+        assert_eq!(
+            timeline.clip(&first).unwrap().duration,
+            22.0,
+            "timeline gaps remain gaps"
+        );
+        assert_eq!(timeline.clip(&others[1]).unwrap(), &neighbour);
+        assert_eq!(editor.project().media.len(), 3);
+    }
+
+    #[test]
+    fn consolidation_refuses_a_short_or_non_video_render_atomically() {
+        let (mut editor, media_id, first) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let second = lane(&mut editor, &media_id, &track, &[10.0])[0].clone();
+        let Command::AddMedia { mut item } = media("/bad.mp4", 1.0, true) else {
+            unreachable!()
+        };
+        let before = editor.project().clone();
+        assert!(
+            editor
+                .apply(Command::ConsolidateClips {
+                    clip_ids: vec![first.clone(), second.clone()],
+                    item: item.clone()
+                })
+                .is_err()
+        );
+        item.duration = Some(20.0);
+        item.kind = MediaKind::Audio;
+        assert!(
+            editor
+                .apply(Command::ConsolidateClips {
+                    clip_ids: vec![first, second],
+                    item
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+    }
+
+    #[test]
+    fn consolidation_refuses_layered_content_and_detached_audio() {
+        let (mut editor, media_id, first) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let second = lane(&mut editor, &media_id, &track, &[10.0])[0].clone();
+        let ids = vec![first.clone(), second];
+        let original = editor.project().clone();
+        let upper = editor.project().active().tracks[1].id.clone();
+        for id in &ids {
+            editor
+                .project_mut()
+                .active_mut()
+                .clip_mut(id)
+                .unwrap()
+                .track_id = upper.clone();
+        }
+        lane(&mut editor, &media_id, &track, &[0.0]);
+        assert!(
+            crate::consolidation_clips(editor.project().active(), &ids).is_err(),
+            "opaque output must not cover lower content"
+        );
+        *editor.project_mut() = original;
+        editor
+            .apply(Command::DetachAudio { clip_id: first })
+            .unwrap();
+        assert!(
+            crate::consolidation_clips(editor.project().active(), &ids).is_err(),
+            "do not leave detached audio linked to a removed source"
+        );
+    }
+
+    #[test]
+    fn consolidation_requires_both_sides_of_edge_transitions() {
+        let (mut editor, media_id, first) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let rest = lane(&mut editor, &media_id, &track, &[10.0, 20.0]);
+        editor
+            .project_mut()
+            .active_mut()
+            .clip_mut(&rest[0])
+            .unwrap()
+            .transition_in = Some(crate::model::Transition {
+            id: "cross-fade".into(),
+            duration: 0.4,
+        });
+        assert!(
+            crate::consolidation_clips(
+                editor.project().active(),
+                &[first.clone(), rest[0].clone()]
+            )
+            .is_ok(),
+            "internal transitions are baked"
+        );
+        assert!(
+            crate::consolidation_clips(editor.project().active(), &rest).is_err(),
+            "incoming boundary transition needs its predecessor"
+        );
+        assert!(
+            crate::consolidation_clips(editor.project().active(), &[first, rest[1].clone()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn consolidation_refuses_subframe_spans_that_would_lose_a_rendered_frame() {
+        let (mut editor, media_id, first) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let second = lane(&mut editor, &media_id, &track, &[10.0])[0].clone();
+        for (id, start) in [(&first, 5.01), (&second, 5.05)] {
+            let clip = editor.project_mut().active_mut().clip_mut(id).unwrap();
+            clip.start = start;
+            clip.duration = 0.04;
+        }
+        assert!(crate::consolidation_clips(editor.project().active(), &[first, second]).is_err());
     }
 
     #[test]
@@ -4742,5 +5269,112 @@ mod tests {
             })
             .expect("no-op");
         assert!(!off.applied);
+    }
+
+    // ── Delete Left / Delete Right (Q / W) ──
+    // https://github.com/jub0t/Concat/issues/400
+
+    fn span(editor: &Editor, id: &str) -> (f64, f64, f64) {
+        let clip = editor.project().active().clip(id).expect("clip");
+        (clip.start, clip.duration, clip.source_start)
+    }
+
+    fn close(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
+        (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9 && (a.2 - b.2).abs() < 1e-9
+    }
+
+    fn cut(editor: &Editor, ids: &[String], at: f64, side: PlayheadSide, ripple: bool) -> Command {
+        crate::delete_to_playhead(editor.project().active(), ids, at, side, ripple).expect("a cut")
+    }
+
+    #[test]
+    fn delete_left_takes_the_clip_from_its_start_to_the_playhead() {
+        let (mut editor, media_id, _) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let ids = lane(&mut editor, &media_id, &track, &[20.0, 30.0]);
+        let command = cut(&editor, &ids[..1], 24.0, PlayheadSide::Left, false);
+        editor.apply(command).expect("cuts");
+        // The frames after the playhead stay where they were, on the
+        // timeline and in the source; the hole stays on a plain timeline.
+        let first = span(&editor, &ids[0]);
+        assert!(close(first, (24.0, 6.0, 4.0)), "{first:?}");
+        assert!(close(span(&editor, &ids[1]), (30.0, 10.0, 0.0)));
+    }
+
+    #[test]
+    fn delete_right_takes_the_clip_from_the_playhead_to_its_end() {
+        let (mut editor, media_id, _) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let ids = lane(&mut editor, &media_id, &track, &[20.0, 30.0]);
+        let command = cut(&editor, &ids[..1], 24.0, PlayheadSide::Right, false);
+        editor.apply(command).expect("cuts");
+        assert!(close(span(&editor, &ids[0]), (20.0, 4.0, 0.0)));
+        assert!(
+            close(span(&editor, &ids[1]), (30.0, 10.0, 0.0)),
+            "the gap stays"
+        );
+    }
+
+    /// On a magnetic timeline the lane closes up behind the cut, as any
+    /// trim there does: a Delete Left keeps the clip's start and pulls
+    /// what follows in by what came off its head; a Delete Right pulls it
+    /// in by what came off the tail.
+    #[test]
+    fn a_magnetic_delete_closes_the_lane() {
+        let (mut editor, media_id, _) = fixture();
+        let track = editor.project().active().tracks[0].id.clone();
+        let ids = lane(&mut editor, &media_id, &track, &[20.0, 30.0]);
+        let left = cut(&editor, &ids[..1], 24.0, PlayheadSide::Left, true);
+        editor.apply(left).expect("cuts");
+        let (first, second) = (span(&editor, &ids[0]), span(&editor, &ids[1]));
+        assert!(close(first, (20.0, 6.0, 4.0)), "{first:?}");
+        assert!(close(second, (26.0, 10.0, 0.0)), "{second:?}");
+
+        let right = cut(&editor, &ids[..1], 22.0, PlayheadSide::Right, true);
+        editor.apply(right).expect("cuts");
+        let (first, second) = (span(&editor, &ids[0]), span(&editor, &ids[1]));
+        assert!(close(first, (20.0, 2.0, 4.0)), "{first:?}");
+        assert!(close(second, (22.0, 10.0, 0.0)), "{second:?}");
+    }
+
+    /// Clips on several lanes are cut together, as one undo step.
+    #[test]
+    fn a_delete_across_lanes_is_one_undo_step() {
+        let (mut editor, media_id, first) = fixture();
+        let tracks = editor.project().active().tracks.clone();
+        let above = lane(&mut editor, &media_id, &tracks[1].id, &[2.0]);
+        let ids = vec![first.clone(), above[0].clone()];
+        let command = cut(&editor, &ids, 5.0, PlayheadSide::Right, false);
+        assert!(matches!(&command, Command::Batch { commands } if commands.len() == 2));
+        editor.apply(command).expect("cuts");
+        assert!(close(span(&editor, &first), (0.0, 5.0, 0.0)));
+        assert!(close(span(&editor, &above[0]), (2.0, 3.0, 0.0)));
+        assert!(editor.undo());
+        assert!(
+            close(span(&editor, &first), (0.0, 10.0, 0.0)),
+            "both back at once"
+        );
+        assert!(close(span(&editor, &above[0]), (2.0, 10.0, 0.0)));
+    }
+
+    /// A playhead outside the clip, or on its very edge, has nothing to
+    /// take: no command at all, rather than an undo step that did nothing.
+    #[test]
+    fn a_playhead_outside_the_clip_cuts_nothing() {
+        let (editor, _, clip) = fixture();
+        let timeline = editor.project().active();
+        let ids = [clip];
+        for at in [-1.0, 0.0, 10.0, 12.0] {
+            for side in [PlayheadSide::Left, PlayheadSide::Right] {
+                assert!(
+                    crate::delete_to_playhead(timeline, &ids, at, side, true).is_none(),
+                    "{at} {side:?}"
+                );
+            }
+        }
+        let gone = ["nobody".to_owned()];
+        assert!(
+            crate::delete_to_playhead(timeline, &gone, 5.0, PlayheadSide::Left, false).is_none()
+        );
     }
 }

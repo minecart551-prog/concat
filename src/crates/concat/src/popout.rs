@@ -121,8 +121,8 @@ fn forget(kind: PaneKind) {
 /// A starting size for each view, and the name its window wears.
 ///
 /// The sizes are a first guess with the view's shape in it, not a policy:
-/// the timeline wants to be wide and the meters want to be small, and the
-/// rest is the person's to move from wherever the OS put the window. The
+/// the timeline wants to be wide and the inspector wants to be tall, and
+/// the rest is the person's to move from wherever the OS put the window. The
 /// names are the same keys the pane switcher's rows read, so a view is
 /// called one thing everywhere it can be seen.
 fn shape(kind: PaneKind) -> (f32, f32, String) {
@@ -132,7 +132,6 @@ fn shape(kind: PaneKind) -> (f32, f32, String) {
         PaneKind::Inspector => (420.0, 720.0, "paneSwitcher.inspector"),
         PaneKind::Timeline => (1280.0, 420.0, "paneSwitcher.timeline"),
         PaneKind::Keyframes => (880.0, 400.0, "common.keyframes"),
-        PaneKind::Meters => (300.0, 260.0, "meters.meters"),
     };
     (w, h, i18n::t(key))
 }

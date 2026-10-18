@@ -267,6 +267,53 @@ export global Keyframes {
     }
 }
 
+/// One background, as a panel shows it: the timeline's, or the selected
+/// clip's own over it.
+export struct BackdropData {
+    /// 0 black, 1 blur, 2 colour, 3 a still; a clip's is -1 while it
+    /// follows the timeline's
+    mode: int,
+    /// how soft a blur is, 0..1
+    amount: float,
+    /// a colour background's colour, and the same as text
+    colour: color,
+    /// the still's row in Backdrop.stills, -1 when it is not one of them
+    still: int,
+}
+
+/// What fills the frame behind the main picture, and Fit and Fill.
+///
+/// A global, as Keyframes is, because three places ask the same questions
+/// of it - the Details panel for the timeline's, the Video panel for a
+/// clip's, and the phone - and none of them should be threaded to.
+export global Backdrop {
+    /// The active timeline's background.
+    in property <BackdropData> timeline;
+    /// The selected clip's own, when it has one to have.
+    in property <BackdropData> clip;
+    /// The selected clip is a video or a still on the lowest lane that
+    /// holds a picture: the clips a background is drawn behind.
+    in property <bool> clip-has;
+    /// Fit and Fill can size the selection: one picture whose size is known.
+    in property <bool> can-frame;
+    /// The bin's stills, by name, for a still background.
+    in property <[string]> stills;
+
+    /// Picks the kind, the timeline's or the selected clip's: `mode` as in
+    /// BackdropData, a clip's -1 going back to the timeline's.
+    callback set-mode(clip: bool, mode: int);
+    /// A blur's softness, as a knob turns it.
+    callback set-amount(clip: bool, amount: float);
+    callback set-colour(clip: bool, colour: color);
+    /// A still, by its row in `stills`.
+    callback set-still(clip: bool, row: int);
+    /// The selected clip's background for every picture on the main lane.
+    callback apply-to-all();
+    /// Sizes the selected picture to the frame: whole inside it, or
+    /// covering it.
+    callback frame(fill: bool);
+}
+
 /// The same again for the properties that are text rather than numbers.
 export enum ClipTextField {
     content, font-family, color, stroke-color, background,
@@ -295,6 +342,8 @@ export struct SelectedClipData {
     /// how many clips the panel writes to: one, or every selected title
     /// when several are selected together, shown by the first's values
     batch: int,
+    /// Only the volume control is available for this selection.
+    batch-volume: bool,
     id: string,
     /// the output frame's size, so a fraction can be shown in pixels
     frame-width: int,
@@ -363,8 +412,34 @@ export struct SelectedClipData {
     /// Enhance has made a copy for this clip, which it shows when
     /// `enhance-on`; the switch flips between it and the original
     enhance-linked: bool,
-    /// The Enhance switch: the copy shown, or a run under way
+    /// The Enhance tick: the section on - and, with a copy, the copy shown
     enhance-on: bool,
+    /// Enhance at work on some clip, a run or a preview: the model is one
+    /// model, so the section's buttons wait for it
+    enhance-busy: bool,
+    /// The Size row: 0 Auto, 1 once, 2 twice, 3 four times - what will
+    /// happen, so an ask this file cannot take shows as what it falls to.
+    /// `enhance-auto` is what Auto comes to here; a size that would pass
+    /// the longest-side limit is greyed, `enhance-size-note` saying why
+    enhance-size: int,
+    enhance-auto: int,
+    enhance-fits-2x: bool,
+    enhance-fits-4x: bool,
+    enhance-size-note: string,
+    /// The Strength row, 0 to 1: how much of the model's answer is kept
+    enhance-strength: float,
+    /// A preview of the frame under the playhead being made for this clip,
+    /// and how far the model's download is when that is what it waits on
+    /// (-1 when it is not)
+    enhance-previewing: bool,
+    enhance-preview-fetch: float,
+    /// The preview made for this clip at these settings: the middle of
+    /// the frame enlarged plainly and enhanced, and what a whole run would
+    /// take at the speed it measured
+    enhance-preview: bool,
+    enhance-before: image,
+    enhance-after: image,
+    enhance-estimate: string,
     /// Reverse writing this clip's backwards copy: -1 when it is not,
     /// else how far along
     reverse-progress: float,

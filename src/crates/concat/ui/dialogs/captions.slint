@@ -7,24 +7,37 @@ import { Glyph, Icon } from "../icons.slint";
 import { Button, CopyChip, DialogRow, DialogSection, Modal, Progress } from "../primitives/modal.slint";
 import { SegmentedControl } from "../primitives/segmented-control.slint";
 import { Select } from "../primitives/select.slint";
+import { Switch } from "../inspector/controls.slint";
 
 // Captions: what the tray's Captions tool opens.
 //
-// Two sheets in one, and which is decided before it opens rather than
-// asked. With a clip that has sound selected, the words are that clip's:
-// through the transcriber, cut to the words' own timing. Otherwise they
-// are a script typed here, one title per sentence at reading pace, laid
-// down from the playhead. Asking would only invite the wrong answer - a
-// silent video sent to the transcriber - so the selection decides. Then
-// where the lines sit and how big they are, and one button. While it runs
+// Two sheets in one, and a switch between them: "Use voice from timeline".
+// On, the words are a clip's: one picked from the timeline's clips that
+// have sound, through the transcriber, cut to the words' own timing. Off,
+// they are a script typed here, one title per sentence at reading pace,
+// laid down from the playhead. The list holds only clips with sound, so a
+// silent video cannot be sent to the transcriber. The switch starts on
+// when the sheet is opened on a clip with sound - from the clip's menu, or
+// with one selected - and off otherwise. Then where the lines sit and how
+// big they are, and one button. While it runs
 // the sheet is the progress report: a transcription knows how far through
 // the sound it is, so it gets a real bar and not a sweep. The language is
 // the transcriber's to work out.
+//
+// On a desk it is a card floating over the editor (see Modal.floating): the
+// timeline stays live under it, so the clip it transcribes follows the
+// selection - a clip with sound selected is the one shown and run. Closed,
+// a transcription goes on, and opened again the card shows it. On a phone
+// it is a sheet.
 
 export struct CaptionsSheetData {
     open: bool,
-    /// The selected clip has sound, and the sheet transcribes it.
-    from-sound: bool,
+    /// "Use voice from timeline": the words come from a clip's sound.
+    from-voice: bool,
+    /// The timeline's clips with sound, by file and start.
+    sources: [string],
+    /// Row in `sources` of the clip to transcribe; -1 for none.
+    source: int,
     text: string,
     /// Row in the installed transcriber list.
     model: int,
@@ -33,8 +46,17 @@ export struct CaptionsSheetData {
     /// 0 Small, 1 Medium, 2 Large
     size: int,
     running: bool,
-    /// 0..1
+    /// 0..1: where the transcription surely is.
     progress: float,
+    /// Where the step under way leaves the bar, 0..1.
+    ceiling: float,
+    /// Seconds that step should take.
+    step: float,
+    /// Seconds of the run still to go, once the work has been timed;
+    /// negative before.
+    left: float,
+    /// What the run is doing, in words.
+    stage: string,
     /// A transcriber model is installed.
     ready: bool,
     /// Why the last run failed, when it did.
@@ -46,14 +68,18 @@ export component CaptionsDialog inherits Modal {
     /// The installed transcriber models, by name.
     in property <[string]> models;
 
+    callback voice-toggled(on: bool);
+    callback source-changed(index: int);
     callback text-edited(text: string);
     callback model-changed(index: int);
     callback placement-changed(index: int);
     callback size-changed(index: int);
     callback begin();
     callback cancel();
+    callback import-srt();
+    callback export-srt();
 
-    property <bool> from-sound: root.data.from-sound;
+    property <bool> from-voice: root.data.from-voice;
 
     open: root.data.open;
     title: I18n.t("captions.captions");
@@ -77,9 +103,46 @@ export component CaptionsDialog inherits Modal {
     init => { root.draft = root.data.text; }
 
     VerticalLayout {
-        if !root.data.running && root.from-sound: DialogSection {
+        // The switch, above both halves. A row of its own rather than a
+        // DialogRow, whose label column is too narrow for the words.
+        if !root.data.running: HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-top: 14px;
+            spacing: 10px;
+
+            Text {
+                horizontal-stretch: 1;
+                text: I18n.t("captions.useVoiceFromTimeline");
+                color: Theme.fg;
+                font-size: Theme.fs;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                Switch {
+                    checked: root.from-voice;
+                    toggled(on) => { root.voice-toggled(on); }
+                }
+            }
+        }
+
+        if !root.data.running && root.from-voice: DialogSection {
             first: true;
             title: I18n.t("common.transcriber");
+
+            DialogRow {
+                label: I18n.t("common.audio");
+                Select {
+                    options: root.data.sources;
+                    current: root.data.source;
+                    placeholder: I18n.t("captions.noVoiceOnTimeline");
+                    enabled: root.data.sources.length > 0;
+                    changed(index) => { root.source-changed(index); }
+                }
+            }
 
             DialogRow {
                 label: I18n.t("common.model");
@@ -100,7 +163,7 @@ export component CaptionsDialog inherits Modal {
             }
         }
 
-        if !root.data.running && !root.from-sound: DialogSection {
+        if !root.data.running && !root.from-voice: DialogSection {
             first: true;
             title: I18n.t("common.script");
 
@@ -173,7 +236,7 @@ export component CaptionsDialog inherits Modal {
             }
 
             Text {
-                text: root.from-sound
+                text: root.from-voice
                     ? I18n.t("captions.oneTitlePerPhrase")
                     : I18n.t("captions.oneTitlePerSentence");
                 color: Theme.fg-dim;
@@ -219,27 +282,47 @@ export component CaptionsDialog inherits Modal {
                 }
             }
 
-            if root.data.running: HorizontalLayout {
+            if root.data.running: VerticalLayout {
                 spacing: 8px;
 
-                Text {
-                    horizontal-stretch: 1;
-                    text: root.data.progress < 0.02 ? I18n.t("captions.loadingTheModel") : I18n.t("captions.transcribing");
-                    color: Theme.fg;
-                    font-size: Theme.fs;
-                    vertical-alignment: center;
+                row := HorizontalLayout {
+                    spacing: 8px;
+                    // The time left, once the work has been timed: counted down
+                    // from the last report, and gone in the last second.
+                    property <int> left: Math.ceil(Math.max(0, root.data.left - bar.since / 1s));
+
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.data.stage;
+                        color: Theme.fg;
+                        font-size: Theme.fs;
+                        vertical-alignment: center;
+                    }
+
+                    if root.data.left >= 0 && row.left > 0: Text {
+                        text: I18n.t2("common.aboutLeft", "\{Math.floor(row.left / 60)}",
+                            (Math.mod(row.left, 60) < 10 ? "0" : "") + "\{Math.mod(row.left, 60)}");
+                        color: Theme.fg-dim;
+                        font-size: Theme.fs;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "\{Math.floor(bar.shown * 100)}%";
+                        color: Theme.fg-muted;
+                        font-family: Theme.font-technical;
+                        font-size: Theme.fs;
+                        vertical-alignment: center;
+                    }
                 }
 
-                Text {
-                    text: "\{Math.round(root.data.progress * 100)}%";
-                    color: Theme.fg-muted;
-                    font-family: Theme.font-technical;
-                    font-size: Theme.fs;
-                    vertical-alignment: center;
+                bar := Progress {
+                    value: root.data.progress;
+                    ceiling: root.data.ceiling;
+                    step: root.data.step * 1s;
+                    live: true;
                 }
             }
-
-            if root.data.running: Progress { value: root.data.progress; }
 
             if root.data.running: HorizontalLayout {
                 alignment: start;
@@ -256,9 +339,35 @@ export component CaptionsDialog inherits Modal {
                 primary: true;
                 large: true;
                 glyph: Glyph.text-mark;
-                label: root.from-sound ? I18n.t("captions.generateCaptions") : I18n.t("captions.addCaptions");
-                enabled: root.from-sound ? root.data.ready : root.draft != "";
+                label: root.from-voice ? I18n.t("captions.generateCaptions") : I18n.t("captions.addCaptions");
+                enabled: root.from-voice ? root.data.ready && root.data.source >= 0 : root.draft != "";
                 clicked => { root.begin(); }
+            }
+
+            // Captions as a SubRip file: one read in as titles with the
+            // look above, timed as the file says; or a lane of titles
+            // written out: the selected title's lane, or with none
+            // selected the lane with the most titles, the captions'.
+            if !root.data.running: HorizontalLayout {
+                spacing: 8px;
+
+                Button {
+                    horizontal-stretch: 1;
+                    block: true;
+                    ghost: true;
+                    glyph: Glyph.import;
+                    label: I18n.t("captions.importSrt");
+                    clicked => { root.import-srt(); }
+                }
+
+                Button {
+                    horizontal-stretch: 1;
+                    block: true;
+                    ghost: true;
+                    glyph: Glyph.export;
+                    label: I18n.t("captions.exportSrt");
+                    clicked => { root.export-srt(); }
+                }
             }
         }
     }

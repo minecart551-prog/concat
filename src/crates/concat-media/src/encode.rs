@@ -227,6 +227,12 @@ pub enum RateMode {
     /// Only the soft encoders support it; hardware encoders fall back to
     /// VBR because their rate control differs.
     Cbr,
+    /// A file's: `bitrate_kbps` is the average the encoder aims for, and a
+    /// busy passage may reach half again as much, so the size is known
+    /// before the render and a calm passage is not padded to the target.
+    /// What every editor's bitrate setting means, and what the export
+    /// sheet asks for.
+    Average,
 }
 
 impl RateMode {
@@ -235,11 +241,12 @@ impl RateMode {
         match self {
             RateMode::Vbr => "vbr",
             RateMode::Cbr => "cbr",
+            RateMode::Average => "average",
         }
     }
 
     /// Every mode, in the order a menu lists them.
-    pub const ALL: [RateMode; 2] = [RateMode::Vbr, RateMode::Cbr];
+    pub const ALL: [RateMode; 3] = [RateMode::Vbr, RateMode::Cbr, RateMode::Average];
 }
 
 /// Encoder settings.
@@ -604,6 +611,7 @@ fn open_video(
     let family = Family::of(encoder_name);
     let pixel_format = family.pixel_format(options.ten_bit);
     let cbr = options.rate_mode == RateMode::Cbr && options.bitrate_kbps > 0;
+    let average = options.rate_mode == RateMode::Average && options.bitrate_kbps > 0;
     let mut video = ffmpeg::codec::Context::new_with_codec(codec)
         .encoder()
         .video()
@@ -659,7 +667,7 @@ fn open_video(
     // The encoders steered by a bitrate alone take one whatever the mode:
     // the target in CBR, and in VBR the rate the CRF would come to.
     if family.steered_by_bitrate() {
-        let kbps = if cbr {
+        let kbps = if cbr || average {
             options.bitrate_kbps
         } else {
             implied_kbps(options.codec, options.crf, width, height, rate)
@@ -670,8 +678,19 @@ fn open_video(
         let fps = (f64::from(rate.numerator()) / f64::from(rate.denominator().max(1))).round();
         video.set_gop((fps.max(1.0) * 2.0) as u32);
     }
+    // An average, on the context as well as in each encoder's own words:
+    // the AV1 encoders read the target and the ceiling from there.
+    if average {
+        video.set_bit_rate(options.bitrate_kbps as usize * 1000);
+        video.set_max_bit_rate(options.bitrate_kbps as usize * 1500);
+    }
     let crf = options.crf.to_string();
     let bitrate = format!("{}k", options.bitrate_kbps);
+    // The average's ceiling, half again the target, and a buffer of two
+    // seconds' worth: room for a cut to a busy shot without the encoder
+    // starving the frames after it.
+    let peak = format!("{}k", options.bitrate_kbps * 3 / 2);
+    let window = format!("{}k", options.bitrate_kbps * 2);
     // One second of VBV, not two. With a looser buffer x264 can stay
     // well under b:v on calm content and never emit the padding that
     // makes a CBR a CBR; `bufsize == bitrate` is where it starts
@@ -705,9 +724,23 @@ fn open_video(
             "bufsize" => bufsize.as_str(),
             "x265-params" => "strict-cbr=1",
         },
+        "libx264" | "libx265" if average => ffmpeg::dict! {
+            "preset" => options.preset.as_str(),
+            "b" => bitrate.as_str(),
+            "maxrate" => peak.as_str(),
+            "bufsize" => window.as_str(),
+        },
         "libx264" | "libx265" => ffmpeg::dict! {
             "preset" => options.preset.as_str(),
             "crf" => crf.as_str(),
+        },
+        // The context carries the target and the ceiling (above); the
+        // encoder runs its own VBR to them.
+        "libsvtav1" if average => ffmpeg::dict! {
+            "preset" => &svt_preset(&options.preset).to_string(),
+        },
+        "libaom-av1" if average => ffmpeg::dict! {
+            "cpu-used" => "6",
         },
         "libsvtav1" => ffmpeg::dict! {
             "preset" => &svt_preset(&options.preset).to_string(),
@@ -718,6 +751,16 @@ fn open_video(
         "libaom-av1" => ffmpeg::dict! {
             "crf" => &options.crf.saturating_add(8).min(63).to_string(),
             "cpu-used" => "6",
+        },
+        // VideoToolbox steers by the context's bitrate when it is given no
+        // quality.
+        "hevc_videotoolbox" | "h264_videotoolbox" if average => ffmpeg::dict! {
+            "profile" => match (encoder_name, options.ten_bit) {
+                ("h264_videotoolbox", _) => "high",
+                (_, true) => "main10",
+                (_, false) => "main",
+            },
+            "allow_sw" => "1",
         },
         "hevc_videotoolbox" | "h264_videotoolbox" => ffmpeg::dict! {
             "q:v" => &videotoolbox_quality(options.crf).to_string(),
@@ -748,6 +791,13 @@ fn open_video(
             "maxrate" => bitrate.as_str(),
             "bufsize" => bufsize.as_str(),
         },
+        _ if family == Family::Nvenc && average => ffmpeg::dict! {
+            "preset" => "p5",
+            "rc" => "vbr",
+            "b" => bitrate.as_str(),
+            "maxrate" => peak.as_str(),
+            "bufsize" => window.as_str(),
+        },
         _ if family == Family::Nvenc => ffmpeg::dict! {
             "preset" => "p5",
             "rc" => "vbr",
@@ -761,6 +811,12 @@ fn open_video(
             "maxrate" => bitrate.as_str(),
             "bufsize" => bufsize.as_str(),
         },
+        _ if family == Family::Qsv && average => ffmpeg::dict! {
+            "preset" => "medium",
+            "b" => bitrate.as_str(),
+            "maxrate" => peak.as_str(),
+            "bufsize" => window.as_str(),
+        },
         _ if family == Family::Qsv => ffmpeg::dict! {
             "preset" => "medium",
             "global_quality" => &options.crf.clamp(1, 51).to_string(),
@@ -769,6 +825,12 @@ fn open_video(
             "quality" => "quality",
             "rc" => "cbr",
             "b" => bitrate.as_str(),
+        },
+        _ if family == Family::Amf && average => ffmpeg::dict! {
+            "quality" => "quality",
+            "rc" => "vbr_peak",
+            "b" => bitrate.as_str(),
+            "maxrate" => peak.as_str(),
         },
         _ if family == Family::Amf => ffmpeg::dict! {
             "quality" => "quality",
@@ -1284,8 +1346,74 @@ impl Encoder {
         self.written
     }
 
+    /// Hands the encoder a frame, or the end of the stream with `None`, as
+    /// FFmpeg's send-and-receive contract asks: an encoder that answers
+    /// "try again" has finished packets waiting to be read, and takes the
+    /// same frame once they are. Android's MediaCodec encoders say so
+    /// whenever their input buffers are full, which on a phone is most
+    /// exports; treated as a failure, it ended every H.264 export there
+    /// a fraction of a second in. An encoder that keeps saying it for
+    /// [`ENCODER_PATIENCE`] is stuck, and the export fails saying so.
+    fn send(&mut self, frame: Option<&Video>) -> Result<()> {
+        let sent = patiently(
+            self,
+            |this| match frame {
+                Some(frame) => this.encoder.send_frame(frame),
+                None => this.encoder.send_eof(),
+            },
+            ffi::is_again,
+            Self::drain,
+            ENCODER_PATIENCE,
+        )?;
+        sent.map_err(|refused| match refused {
+            Refused::Error(error) => ffi::fail("encode", &self.path, error),
+            Refused::Stalled => Error::Ffi {
+                operation: "encode",
+                path: self.path.clone(),
+                detail: format!(
+                    "the encoder took no {} for {} seconds",
+                    if frame.is_some() {
+                        "frame"
+                    } else {
+                        "end of the stream"
+                    },
+                    ENCODER_PATIENCE.as_secs()
+                ),
+            },
+        })
+    }
+
+    /// Reads out what the encoder still holds once it has been told the
+    /// stream ended, until it says it has handed back the last packet.
+    /// FFmpeg's contract has no "try again" here, but its MediaCodec
+    /// wrapper waits a few milliseconds for each output buffer and says
+    /// "try again" when none has come yet, frames still inside it; stopping
+    /// there cut the end off a phone's export with no error. An encoder
+    /// that hands back nothing for [`ENCODER_PATIENCE`] is stuck, and the
+    /// export fails saying so rather than writing a file short of its end.
+    fn flush(&mut self) -> Result<()> {
+        if until_ended(self, Self::read_out, ENCODER_PATIENCE)? {
+            return Ok(());
+        }
+        Err(Error::Ffi {
+            operation: "encode",
+            path: self.path.clone(),
+            detail: format!(
+                "the encoder held its last frames for {} seconds",
+                ENCODER_PATIENCE.as_secs()
+            ),
+        })
+    }
+
     /// Writes every packet the encoder has ready.
     fn drain(&mut self) -> Result<()> {
+        self.read_out().map(|_| ())
+    }
+
+    /// Writes every packet the encoder has ready, and says whether that was
+    /// its last or it has nothing more for now.
+    fn read_out(&mut self) -> Result<Drained> {
+        let mut packets = 0;
         loop {
             let mut packet = ffmpeg::Packet::empty();
             match self.encoder.receive_packet(&mut packet) {
@@ -1304,12 +1432,87 @@ impl Encoder {
                     packet
                         .write_interleaved(&mut self.output)
                         .map_err(|error| ffi::fail("write packet", &self.path, error))?;
+                    packets += 1;
                 }
-                Err(ffmpeg::Error::Eof) => return Ok(()),
-                Err(error) if ffi::is_again(&error) => return Ok(()),
+                Err(ffmpeg::Error::Eof) => return Ok(Drained::Ended),
+                Err(error) if ffi::is_again(&error) => return Ok(Drained::Again { packets }),
                 Err(error) => return Err(ffi::fail("encode", &self.path, error)),
             }
         }
+    }
+}
+
+/// How long an encoder may keep answering "try again" to one frame, its
+/// finished packets read out between asks, before the export calls it
+/// stuck. A phone's MediaCodec encoder frees an input buffer within a few
+/// milliseconds of its output being read; ten seconds is a stall.
+const ENCODER_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+/// The pause between two asks, so a busy hardware encoder is waited for
+/// rather than spun on.
+const ENCODER_WAIT: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// Why [`patiently`] gave up on a send.
+#[derive(Debug, PartialEq)]
+enum Refused<E> {
+    /// The encoder refused it for a reason of its own.
+    Error(E),
+    /// The encoder kept saying "try again" for the whole of the patience.
+    Stalled,
+}
+
+/// `send` until it is taken: on an error `again` calls a "try again",
+/// `drain` reads out what the encoder has finished and `send` is asked
+/// once more, for up to `patience`. Any other error ends it at once. A
+/// failure to drain is the outer error; the send's own outcome the inner.
+fn patiently<S, E>(
+    state: &mut S,
+    mut send: impl FnMut(&mut S) -> std::result::Result<(), E>,
+    again: impl Fn(&E) -> bool,
+    mut drain: impl FnMut(&mut S) -> Result<()>,
+    patience: std::time::Duration,
+) -> Result<std::result::Result<(), Refused<E>>> {
+    let started = std::time::Instant::now();
+    loop {
+        match send(state) {
+            Ok(()) => return Ok(Ok(())),
+            Err(error) if !again(&error) => return Ok(Err(Refused::Error(error))),
+            Err(_) if started.elapsed() >= patience => return Ok(Err(Refused::Stalled)),
+            Err(_) => {
+                drain(state)?;
+                std::thread::sleep(ENCODER_WAIT);
+            }
+        }
+    }
+}
+
+/// What reading an encoder's packets out came to.
+#[derive(Debug, PartialEq)]
+enum Drained {
+    /// It has handed back its last packet.
+    Ended,
+    /// It has nothing more for now; `packets` came out before it said so.
+    Again { packets: usize },
+}
+
+/// `read_out` until the encoder says it has handed back its last packet,
+/// pausing [`ENCODER_WAIT`] between reads that end in "try again". The
+/// patience runs from the last packet, so an encoder still handing frames
+/// back is waited on however long its tail is; one that hands back nothing
+/// for `patience` gives `false`.
+fn until_ended<S>(
+    state: &mut S,
+    mut read_out: impl FnMut(&mut S) -> Result<Drained>,
+    patience: std::time::Duration,
+) -> Result<bool> {
+    let mut last = std::time::Instant::now();
+    loop {
+        match read_out(state)? {
+            Drained::Ended => return Ok(true),
+            Drained::Again { packets } if packets > 0 => last = std::time::Instant::now(),
+            Drained::Again { .. } if last.elapsed() >= patience => return Ok(false),
+            Drained::Again { .. } => {}
+        }
+        std::thread::sleep(ENCODER_WAIT);
     }
 }
 
@@ -1371,9 +1574,7 @@ impl FrameSink for Encoder {
             (*converted.as_mut_ptr()).color_range = self.color_range.into();
         }
 
-        self.encoder
-            .send_frame(&converted)
-            .map_err(|error| ffi::fail("encode", &self.path, error))?;
+        self.send(Some(&converted))?;
         self.written += 1;
         self.drain()
     }
@@ -1383,10 +1584,8 @@ impl FrameSink for Encoder {
             return Ok(());
         }
         self.finished = true;
-        self.encoder
-            .send_eof()
-            .map_err(|error| ffi::fail("encode", &self.path, error))?;
-        self.drain()?;
+        self.send(None)?;
+        self.flush()?;
         if let Some(light) = &self.light {
             // The light the file holds, measured as it was written, in the
             // container ('clli'), which the muxer writes with the index.
@@ -1494,6 +1693,131 @@ pub fn jpeg(frame: &Frame, quality: u8) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// A "try again" is not a failure: the finished packets are read out
+    /// and the same frame is sent again, as often as it takes (#286: every
+    /// H.264 export on an Android phone ended there). Any other error ends
+    /// the send at once, and an encoder that never takes the frame is
+    /// called stuck rather than waited on for ever.
+    #[test]
+    fn a_frame_the_encoder_is_not_ready_for_is_sent_again() {
+        #[derive(Default)]
+        struct Fake {
+            refusals: u32,
+            sends: u32,
+            drains: u32,
+        }
+        let again = |error: &&str| *error == "again";
+        let patience = std::time::Duration::from_secs(5);
+
+        let mut busy = Fake {
+            refusals: 3,
+            ..Fake::default()
+        };
+        let sent = patiently(
+            &mut busy,
+            |fake| {
+                fake.sends += 1;
+                if fake.refusals > 0 {
+                    fake.refusals -= 1;
+                    Err("again")
+                } else {
+                    Ok(())
+                }
+            },
+            again,
+            |fake| {
+                fake.drains += 1;
+                Ok(())
+            },
+            patience,
+        )
+        .unwrap();
+        assert_eq!(sent, Ok(()));
+        assert_eq!((busy.sends, busy.drains), (4, 3));
+
+        let mut broken = Fake::default();
+        let sent = patiently(
+            &mut broken,
+            |fake| {
+                fake.sends += 1;
+                Err("invalid")
+            },
+            again,
+            |fake| {
+                fake.drains += 1;
+                Ok(())
+            },
+            patience,
+        )
+        .unwrap();
+        assert_eq!(sent, Err(Refused::Error("invalid")));
+        assert_eq!((broken.sends, broken.drains), (1, 0));
+
+        let mut stuck = Fake::default();
+        let sent = patiently(
+            &mut stuck,
+            |_| Err("again"),
+            again,
+            |_| Ok(()),
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(sent, Err(Refused::Stalled));
+    }
+
+    /// After the end of the stream, an encoder that says "try again" with
+    /// frames still inside it (MediaCodec's) is read again until it says it
+    /// has handed back the last, and one that hands back nothing for the
+    /// whole of the patience is called stuck rather than taken as done.
+    #[test]
+    fn the_last_frames_are_waited_for() {
+        let patience = std::time::Duration::from_secs(5);
+
+        // Two empty reads, one with the tail, two more empty, then the end.
+        let mut reads = vec![
+            Drained::Ended,
+            Drained::Again { packets: 0 },
+            Drained::Again { packets: 0 },
+            Drained::Again { packets: 3 },
+            Drained::Again { packets: 0 },
+            Drained::Again { packets: 0 },
+        ];
+        let mut asked = 0;
+        let ended = until_ended(
+            &mut reads,
+            |reads| {
+                asked += 1;
+                Ok(reads.pop().expect("read past the end"))
+            },
+            patience,
+        )
+        .unwrap();
+        assert!(ended);
+        assert_eq!(asked, 6);
+
+        let ended = until_ended(
+            &mut (),
+            |_| Ok(Drained::Again { packets: 0 }),
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        assert!(!ended);
+
+        let mut failing = ();
+        let failed = until_ended(
+            &mut failing,
+            |_| {
+                Err(Error::Ffi {
+                    operation: "encode",
+                    path: std::path::PathBuf::new(),
+                    detail: "broken".into(),
+                })
+            },
+            patience,
+        );
+        assert!(failed.is_err());
+    }
+
     /// A constant-bitrate export opens with each software encoder and comes
     /// out near the rate asked for. Noise, so the content costs more than
     /// the target and the encoder has to hold it rather than coast under.
@@ -1535,6 +1859,62 @@ mod tests {
             assert!(
                 (f64::from(KBPS) * 0.7..=f64::from(KBPS) * 1.3).contains(&kbps),
                 "{codec:?} CBR at {KBPS} kb/s came out at {kbps:.0} kb/s"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An average-bitrate export, the export sheet's: busy pictures come
+    /// out near the target, so the size the sheet promised is the size
+    /// written, and calm ones well under it, not padded up to it as CBR
+    /// pads.
+    #[test]
+    fn an_average_export_keeps_near_its_target_and_does_not_pad() {
+        let dir =
+            std::env::temp_dir().join(format!("concat-media-abr-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        const KBPS: u32 = 2_000;
+        const FRAMES: u32 = 60;
+        let seconds = f64::from(FRAMES) / 30.0;
+        for codec in [VideoCodec::H264, VideoCodec::Hevc] {
+            let options = EncodeOptions {
+                codec,
+                preset: "ultrafast".to_owned(),
+                rate_mode: RateMode::Average,
+                bitrate_kbps: KBPS,
+                hardware: false,
+                ..EncodeOptions::default()
+            };
+            let rate_of = |noisy: bool| {
+                let path = dir.join(format!("{}-{noisy}.mp4", codec.name()));
+                let mut encoder = Encoder::create(&path, 320, 180, FrameRate::THIRTY, &options)
+                    .unwrap_or_else(|error| panic!("{codec:?} average opens: {error}"));
+                let mut frame = Frame::black(320, 180);
+                let mut state = 0x2545_F491_4F6C_DD1D_u64;
+                for _ in 0..FRAMES {
+                    if noisy {
+                        for byte in frame.pixels_mut() {
+                            state ^= state << 13;
+                            state ^= state >> 7;
+                            state ^= state << 17;
+                            *byte = state as u8;
+                        }
+                    }
+                    encoder.write_frame(&frame).expect("writes");
+                }
+                encoder.finish().expect("finishes");
+                std::fs::metadata(&path).expect("written").len() as f64 * 8.0 / 1000.0 / seconds
+            };
+            let busy = rate_of(true);
+            assert!(
+                (f64::from(KBPS) * 0.6..=f64::from(KBPS) * 1.6).contains(&busy),
+                "{codec:?} averaging {KBPS} kb/s came out at {busy:.0} kb/s on noise"
+            );
+            let calm = rate_of(false);
+            assert!(
+                calm < f64::from(KBPS) * 0.5,
+                "{codec:?} averaging {KBPS} kb/s padded a black picture to {calm:.0} kb/s"
             );
         }
         let _ = std::fs::remove_dir_all(&dir);

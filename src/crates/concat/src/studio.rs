@@ -42,7 +42,11 @@ use concat_project::commands::{ClipMove, ClipPatch, TrackFlag, TrimEdge};
 use concat_project::model::{
     self, AppliedFilter, Clip, Project, TextAlign, TextStyle, Timeline, Track, Transition,
 };
-use concat_project::{Command, why_not_merge};
+use concat_project::{Command, PlayheadSide};
+
+mod backdrop;
+mod consolidate;
+use consolidate::MergeJob;
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::dock::{
@@ -158,6 +162,58 @@ pub struct Strip {
     pub height: i32,
 }
 
+/// One frame's middle through the Enhance model, before and after, for
+/// the inspector to show before a whole file is committed to.
+struct EnhancePreview {
+    /// The clip it was made for, and the file and size it was made from:
+    /// a preview of other settings or another file is not this one.
+    clip_id: String,
+    media_id: String,
+    factor: u32,
+    /// The plain enlargement and the model's full-strength answer, kept so
+    /// Strength re-blends them at once rather than running the model again.
+    plain: concat_core::Frame,
+    enhanced: concat_core::Frame,
+    before: slint::Image,
+    after: slint::Image,
+    /// The whole percent `after` is blended at.
+    after_percent: u32,
+    /// See `concat_host::enhance::Preview`.
+    tile_seconds: f64,
+    tiles_per_frame: usize,
+}
+
+/// The Enhance section's rows for one clip; see `Studio::enhance_readout`.
+#[derive(Default)]
+struct EnhanceReadout {
+    /// The Size row's segment: 0 Auto, 1 once, 2 twice, 3 four times.
+    size: i32,
+    /// What Auto comes to for this file.
+    auto: u32,
+    fits_2x: bool,
+    fits_4x: bool,
+    /// Why a size is greyed, or empty.
+    size_note: String,
+    /// Before, after and the estimate for a whole run, when a preview of
+    /// these settings is on hand.
+    preview: Option<(slint::Image, slint::Image, String)>,
+}
+
+impl EnhancePreview {
+    /// `after` blended at `strength`, unless it already is.
+    fn blend_at(&mut self, strength: f32) {
+        let percent = concat_host::enhance::strength_percent(strength);
+        if percent != self.after_percent {
+            self.after = image_of(&concat_vision::enhance::blend(
+                &self.enhanced,
+                &self.plain,
+                strength,
+            ));
+            self.after_percent = percent;
+        }
+    }
+}
+
 impl From<CachedStrip> for Strip {
     fn from(strip: CachedStrip) -> Self {
         Self {
@@ -206,10 +262,9 @@ pub const EXPORT_SHORT_SIDES: [u32; 4] = [2160, 1440, 1080, 720];
 /// compact dock: a phone, a tablet held upright, a desktop window squeezed
 /// to a corner. Four panes across less than this is four slivers.
 pub const COMPACT_WIDTH: f32 = 860.0;
-/// Megabits per second at 1080p30 for each quality tier, for the size
-/// estimate; and the CRF each tier renders at.
-pub(crate) const EXPORT_TIERS: [f32; 3] = [16.0, 8.0, 4.0];
-pub(crate) const EXPORT_CRF: [u8; 3] = [16, 20, 26];
+/// The quality an export's encoder falls back on were it given no
+/// bitrate: the export sheet always gives one.
+pub(crate) const EXPORT_CRF: u8 = 20;
 pub(crate) const AUDIO_BPS: f32 = 192_000.0;
 
 /// The frame shapes the launch screen offers, as the ratio behind each
@@ -691,6 +746,8 @@ pub struct Models {
     pub speakers: Rc<VecModel<SharedString>>,
     pub speaker_details: Rc<VecModel<SharedString>>,
     pub speech_samples: Rc<VecModel<SharedString>>,
+    /// The microphones the voiceover panel lists.
+    pub voiceover_devices: Rc<VecModel<SharedString>>,
     pub speech_sample_waves: Rc<VecModel<SharedString>>,
     pub speech_sample_details: Rc<VecModel<SharedString>>,
     pub transcribers: Rc<VecModel<ModelData>>,
@@ -758,6 +815,7 @@ impl Models {
             speakers: Rc::new(VecModel::default()),
             speaker_details: Rc::new(VecModel::default()),
             speech_samples: Rc::new(VecModel::default()),
+            voiceover_devices: Rc::new(VecModel::default()),
             speech_sample_waves: Rc::new(VecModel::default()),
             speech_sample_details: Rc::new(VecModel::default()),
             transcribers: Rc::new(VecModel::default()),
@@ -834,7 +892,7 @@ pub struct Studio {
     /// What the last art scan was for: the document's revision, the
     /// screen, and how much was pending. The scan runs when one of them
     /// changes and is a comparison on the pointer stream between.
-    art_stamp: Option<(u64, bool, usize)>,
+    art_stamp: Option<(u64, bool, usize, bool)>,
     /// Media whose proxy has been seen to, this project: `proxy::ensure`
     /// costs two stats of the file, and once is enough.
     proxied: HashSet<String>,
@@ -851,6 +909,10 @@ pub struct Studio {
     pub playhead: f32,
     pub playing: bool,
     transport: slint::Timer,
+    /// The phone's lanes carrying on after a finger throws them, and the
+    /// beat that moves them while they do; see `panes::glide`.
+    coast: crate::panes::glide::Coast,
+    glide_beat: slint::Timer,
     /// The preview axis: the instant under the pointer while it crosses the
     /// lanes, which the monitor shows instead of the playhead's. None when
     /// the pointer is elsewhere, or the axis is off, or the cut is playing.
@@ -1043,14 +1105,37 @@ pub struct Studio {
     /// Enhance at work, by clip id: whether the model is still
     /// downloading, and how far along. One at a time, like every long job.
     enhance_jobs: HashMap<String, (bool, f32)>,
+    /// The Enhance section's Size, in times larger, 0 for Auto, and its
+    /// Strength, 0 to 1. The window's rather than a clip's: they are what
+    /// the next run is made with, carried from clip to clip the way a
+    /// tool's settings are, and a copy already made is named by its own;
+    /// see `concat_host::enhance::target_for`.
+    enhance_size: u32,
+    enhance_strength: f32,
+    /// The last preview of a frame through the model, while the clip it
+    /// was made for is the one in the inspector.
+    enhance_preview: Option<EnhancePreview>,
+    /// A preview being made, for the clip by this id: whether the model is
+    /// still downloading, and how far along.
+    enhance_previewing: Option<(String, bool, f32)>,
+    /// Clips whose Enhance section is ticked but that have no copy yet: the
+    /// tick only turns the section on, so it needs somewhere to live until
+    /// a run leaves a copy, whose link then holds it. The window's, not
+    /// the project's: a tick with nothing made is not worth an undo step.
+    enhance_ticked: HashSet<String>,
     /// Reverse writing a clip's backwards copy, by clip: how far along.
     reverse_jobs: HashMap<String, f32>,
+    /// A selection being rendered into one clip, with its own cancel flag.
+    merge_job: Option<MergeJob>,
     /// The smart stroke being read, by the same name, while one is.
     region_job: Option<String>,
     /// The last smart stroke as the stage drew it, kept on screen from the
     /// release until the model has read what was under it, so the paint
     /// does not vanish before its answer arrives.
     pending_stroke: Option<(String, f32, bool)>,
+    /// Cutouts and smart strokes the app died working on, by their masks'
+    /// folder: not started again by themselves, and said once a session.
+    tripped_strokes: HashSet<std::path::PathBuf>,
 }
 
 // ── conversions between the document and the window ─────────────────────
@@ -1152,8 +1237,8 @@ fn shelves(
         // The shelves are built from every package and only the entries are
         // narrowed: a strip that lost a segment because a search matched
         // nothing on it would move under the pointer as you typed.
-        let name = i18n::package_text(&meta.id, "name", &meta.name);
-        let description = i18n::package_text(&meta.id, "description", &meta.description);
+        let name = meta.name.clone();
+        let description = meta.description.clone();
         let starred = favourites.iter().any(|held| held == &meta.id);
         let shown = if view.favourites {
             starred
@@ -1194,7 +1279,7 @@ fn shelves(
         entries.push(CatalogueEntryData {
             id: meta.id.as_str().into(),
             name: name.into(),
-            category: i18n::shelf_text("categories", &category).into(),
+            category: category.as_str().into(),
             group: group as i32,
             description: description.into(),
             favourite: starred,
@@ -1202,10 +1287,7 @@ fn shelves(
         });
     }
     (
-        groups
-            .into_iter()
-            .map(|group| SharedString::from(i18n::shelf_text("categories", &group)))
-            .collect(),
+        groups.into_iter().map(SharedString::from).collect(),
         entries,
     )
 }
@@ -1606,8 +1688,8 @@ fn adjust_rows(chain: &[AppliedFilter], at: Option<f64>) -> Vec<AppliedParamData
             AppliedParamData {
                 entry: -1,
                 key: param.key.as_str().into(),
-                label: i18n::shelf_text("labels", &param.label).into(),
-                group: i18n::shelf_text("groups", &param.group).into(),
+                label: param.label.as_str().into(),
+                group: param.group.as_str().into(),
                 unit: param.unit.as_str().into(),
                 min: param.min as f32,
                 max: param.max as f32,
@@ -1664,7 +1746,7 @@ fn chain_colours(chain: &[AppliedFilter]) -> Vec<ColourKnobData> {
                 .map(move |param| ColourKnobData {
                     entry: index as i32,
                     key: param.key.as_str().into(),
-                    label: i18n::shelf_text("labels", &param.label).into(),
+                    label: param.label.as_str().into(),
                     value: unpacked(
                         entry
                             .params
@@ -1746,7 +1828,7 @@ fn chain_rows(chain: &[AppliedFilter]) -> (Vec<AppliedEntryData>, Vec<AppliedPar
             knobs.push(AppliedParamData {
                 entry: index as i32,
                 key: param.key.as_str().into(),
-                label: i18n::shelf_text("labels", &param.label).into(),
+                label: param.label.as_str().into(),
                 group: "".into(),
                 unit: param.unit.as_str().into(),
                 min: param.min as f32,
@@ -1809,8 +1891,8 @@ fn grading_rows(
                 wheels.push(WheelData {
                     entry,
                     key: param.key.as_str().into(),
-                    label: i18n::shelf_text("labels", &param.label).into(),
-                    group: i18n::shelf_text("groups", &param.group).into(),
+                    label: param.label.as_str().into(),
+                    group: param.group.as_str().into(),
                     x: value(&x, 0.0) as f32,
                     y: value(&y, 0.0) as f32,
                     master: value(&m, param.default) as f32,
@@ -1837,8 +1919,8 @@ fn grading_rows(
                     CurveData {
                         entry,
                         key: param.key.as_str().into(),
-                        label: i18n::shelf_text("labels", &param.label).into(),
-                        group: i18n::shelf_text("groups", &param.group).into(),
+                        label: param.label.as_str().into(),
+                        group: param.group.as_str().into(),
                         points: ModelRc::default(),
                         path: grading::curve_path(params, &param.key).into(),
                     },
@@ -1979,6 +2061,11 @@ pub enum Confirm {
     RemoveTrack { track_id: String },
     /// Exporting over a file that is already at `path`.
     ReplaceExport { path: String },
+    /// Quitting though the project could not be saved, for `error`. A
+    /// close that cannot write the project keeps the window, and without
+    /// this a disk unplugged, full or read-only made a window that would
+    /// never close.
+    QuitWithoutSaving { error: String },
 }
 
 /// One clip on the clipboard: the clip as it was when copied, and the row
@@ -1989,6 +2076,96 @@ pub enum Confirm {
 pub struct Held {
     pub row: usize,
     pub clip: Clip,
+}
+
+/// The edits that make `placed` - the whole of `source`'s file, just laid
+/// on a free stretch of the lane - into a copy of `source` at `start` on
+/// `track_id`: its frames, speed, placement, keys and mix.
+///
+/// The footage is trimmed at normal speed to what the source covers, then
+/// retimed - the speed command keeps the footage covered and recomputes
+/// the length - and only then moved to `start`, so neighbours there never
+/// push the whole file aside and shift the frames the trims cut.
+fn copy_commands(source: &Clip, placed: &Clip, track_id: &str, start: f64) -> Vec<Command> {
+    let created = &placed.id;
+    let mut commands = Vec::new();
+    let head = source.source_start - placed.source_start;
+    if head.abs() > 1e-6 {
+        commands.push(Command::TrimClip {
+            clip_id: created.clone(),
+            edge: TrimEdge::Start,
+            delta: head,
+            ripple: false,
+        });
+    }
+    // The footage the source covers, at normal speed.
+    let covered = source.duration * source.speed;
+    let tail = covered - (placed.duration - head);
+    if tail.abs() > 1e-6 {
+        commands.push(Command::TrimClip {
+            clip_id: created.clone(),
+            edge: TrimEdge::End,
+            delta: tail,
+            ripple: false,
+        });
+    }
+    if (source.speed - 1.0).abs() > 1e-9 {
+        commands.push(Command::SetClipSpeed {
+            clip_id: created.clone(),
+            speed: source.speed,
+        });
+    }
+    if source.speed_curve.is_some() {
+        commands.push(Command::SetClipSpeedCurve {
+            clip_id: created.clone(),
+            curve: source.speed_curve.clone(),
+        });
+    }
+    commands.push(Command::MoveClips {
+        moves: vec![ClipMove {
+            clip_id: created.clone(),
+            start,
+            track_id: track_id.to_owned(),
+        }],
+    });
+    commands.push(Command::SetClipTransform {
+        clip_id: created.clone(),
+        scale: Some(source.scale),
+        offset_x: Some(source.offset_x),
+        offset_y: Some(source.offset_y),
+        rotation: Some(source.rotation),
+        stretch_x: Some(source.stretch_x),
+        stretch_y: Some(source.stretch_y),
+    });
+    for key in &source.keys {
+        commands.push(Command::SetClipKey {
+            clip_id: created.clone(),
+            property: key.property,
+            at: key.at,
+            value: key.value,
+            ease: key.ease,
+        });
+    }
+    commands.push(Command::UpdateClip {
+        clip_id: created.clone(),
+        patch: ClipPatch {
+            name: Some(format!("{} copy", source.name)),
+            volume: Some(source.volume),
+            fade_in: Some(source.fade_in),
+            fade_out: Some(source.fade_out),
+            opacity: Some(source.opacity),
+            preserve_pitch: Some(source.preserve_pitch),
+            muted: source.muted,
+            flip_h: Some(source.flip_h),
+            flip_v: Some(source.flip_v),
+            blend: Some(source.blend.clone()),
+            crop: Some(source.crop),
+            filters: Some(source.filters.clone()),
+            video_effects: Some(source.video_effects.clone()),
+            ..ClipPatch::default()
+        },
+    });
+    commands
 }
 
 /// Where each held clip lands: `(row, start)` per clip in the order held,
@@ -2083,9 +2260,7 @@ fn upgraded_effects(pairs: &[(String, String)]) -> Vec<String> {
         .map(|(old, new)| {
             let new = catalogue
                 .get(new)
-                .map(|package| {
-                    i18n::package_text(package.id(), "name", &package.manifest.effect.name)
-                })
+                .map(|package| package.manifest.effect.name.clone())
                 .unwrap_or_else(|| label_of(new));
             format!("{} → {new}", label_of(old))
         })
@@ -2172,6 +2347,10 @@ impl Studio {
     /// read off disk.
     pub fn new(host: Host) -> Self {
         let prefs = Preferences::load(&host.dirs);
+        let mut start = crate::panes::start::StartPane::default();
+        if let Some(location) = prefs.project_location() {
+            start.location = location.to_owned();
+        }
         // The remembered log level, unless this run's environment named
         // one: CONCAT_LOG is the louder ask.
         if concat_host::logs::environment_level().is_none()
@@ -2213,6 +2392,8 @@ impl Studio {
             // ~20px a second: a ten-second cut fits a pane at its default width.
             playing: false,
             transport: slint::Timer::default(),
+            coast: crate::panes::glide::Coast::default(),
+            glide_beat: slint::Timer::default(),
             hover: None,
             hover_hush: slint::Timer::default(),
             clipboard: Vec::new(),
@@ -2230,7 +2411,7 @@ impl Studio {
             activity_burst: None,
             toast: ToastState::default(),
             on_start: true,
-            start: crate::panes::start::StartPane::default(),
+            start,
             recents,
             posters: HashMap::new(),
             posters_pending: HashSet::new(),
@@ -2281,9 +2462,16 @@ impl Studio {
             painting: true,
             cutout_jobs: HashMap::new(),
             enhance_jobs: HashMap::new(),
+            enhance_size: 0,
+            enhance_strength: concat_host::enhance::DEFAULT_STRENGTH,
+            enhance_preview: None,
+            enhance_previewing: None,
+            enhance_ticked: HashSet::new(),
             reverse_jobs: HashMap::new(),
+            merge_job: None,
             region_job: None,
             pending_stroke: None,
+            tripped_strokes: HashSet::new(),
             host,
         };
         studio.handle(crate::panes::Msg::Settings(
@@ -2372,6 +2560,11 @@ impl Studio {
                     crate::panes::export::ExportMsg::Overwrite,
                 ));
             }
+            Some(Confirm::QuitWithoutSaving { .. }) => {
+                log::warn!("close: quitting without saving, as asked");
+                self.release_project();
+                slint::quit_event_loop().ok();
+            }
             None => {}
         }
     }
@@ -2406,6 +2599,12 @@ impl Studio {
                 title: t("export.replaceFileTitle").into(),
                 message: tf("export.replaceFileMessage", &[path]).into(),
                 action: t("export.replace").into(),
+            },
+            Confirm::QuitWithoutSaving { error } => crate::ui::ConfirmData {
+                open: true,
+                title: t("close.unsavedTitle").into(),
+                message: tf("close.unsavedMessage", &[error]).into(),
+                action: t("close.quitWithoutSaving").into(),
             },
         }
     }
@@ -2720,12 +2919,15 @@ impl Studio {
         };
         self.autosave.stop();
         let (path, document) = session.prepare_save(None);
+        // Capture the write order with the snapshot, not later when a
+        // worker happens to pick it up.
+        let ticket = projects::ticket();
         self.dirty = false;
-        spawn(
-            move || projects::save(&path, &document),
+        spawn_in_project(
+            move || projects::save_ordered(&path, &document, ticket),
             move |studio, _, _, result| match result {
-                Ok(()) if announce => studio.notify(&t("studio.projectSaved"), false),
-                Ok(()) => {}
+                Ok(_) if announce => studio.notify(&t("studio.projectSaved"), false),
+                Ok(_) => {}
                 Err(error) => {
                     studio.dirty = true;
                     studio.notify(&tf("studio.couldNotSave", &[&error]), true);
@@ -2895,6 +3097,14 @@ impl Studio {
     // ── playback ──
 
     pub fn play_toggle(&mut self) {
+        self.stop_glide();
+        // A voiceover take owns the transport while it runs: Space, the
+        // monitor's button and the keymap's play pause or resume the take
+        // and the picture together, never the picture alone.
+        if let Some(msg) = self.voiceover.on_play() {
+            self.handle(crate::panes::Msg::Voiceover(msg));
+            return;
+        }
         // The monitor's play button and Space play what it shows.
         if self.source.is_some() {
             self.source_toggle();
@@ -2918,7 +3128,7 @@ impl Studio {
         self.playing = true;
         log::debug!("playback: playing from {:.3}s", self.playhead);
         self.host.playback.play(f64::from(self.playhead));
-        self.meters.wake();
+        self.wake_meters();
         // The clock is the audio device's. This looks at it far more often
         // than any timeline's frame rate and acts only when the frame under
         // it changes, so each frame is asked for within a few milliseconds of
@@ -2973,6 +3183,14 @@ impl Studio {
     }
 
     pub fn pause(&mut self) {
+        // The picture stopped from anywhere - a seek, a step, an edit -
+        // stops the take with it. The panel's own pause comes through here
+        // with the pane taken out of the studio, so it is not sent back.
+        let at_end = self.playhead >= self.duration();
+        if let Some(msg) = self.voiceover.on_pause(at_end) {
+            self.handle(crate::panes::Msg::Voiceover(msg));
+            return;
+        }
         if self.playing {
             log::debug!("playback: paused at {:.3}s", self.playhead);
         }
@@ -2991,6 +3209,15 @@ impl Studio {
     /// lets it, which is the default, so the ruler can be clicked beyond the
     /// last clip and something placed at the playhead there.
     pub fn seek(&mut self, seconds: f32) {
+        // The playhead belongs to a voiceover take until it stops: moved
+        // under it, the words would land away from the frames they were
+        // spoken to.
+        if let Some(first) = self.voiceover.on_seek() {
+            if first {
+                self.notify(&t("voiceover.playheadHeld"), false);
+            }
+            return;
+        }
         // The timeline was clicked: it has the monitor back.
         self.close_source();
         self.playhead = seconds.max(0.0);
@@ -3001,6 +3228,88 @@ impl Studio {
         self.lanes.recentre(self.playhead);
         self.host.playback.seek(f64::from(self.playhead));
         self.request_preview();
+    }
+
+    // ── the phone's throw ──
+
+    /// A finger landed on the phone's lanes, or two began a pinch: a glide
+    /// still running stops where it is, the way a list does under a
+    /// thumb, and the scrubs from here are the new gesture's samples.
+    pub fn finger_held(&mut self) {
+        self.stop_glide();
+        self.coast.tracker.clear();
+        self.coast.tracking = true;
+    }
+
+    /// A scrub: the playhead goes to `seconds`, and while a finger is on
+    /// the phone's lanes, where it went is a sample of how fast they move.
+    pub fn scrub(&mut self, seconds: f32) {
+        self.seek(seconds.max(0.0));
+        if self.coast.tracking {
+            let at = self.coast.clock();
+            self.coast.tracker.push(at, f64::from(self.playhead));
+        }
+    }
+
+    /// The finger that dragged the phone's lanes along the cut has let go:
+    /// they carry on at its speed and run down, scrubbing as they go.
+    /// Nothing while playing - the transport owns the playhead then - and
+    /// nothing for a finger that stopped before it lifted.
+    pub fn finger_lifted(&mut self) {
+        let tracking = std::mem::replace(&mut self.coast.tracking, false);
+        if !tracking || self.playing || !self.lanes.centred {
+            return;
+        }
+        // Thrown in pixels, so the friction and the thresholds mean the
+        // same at every zoom; each step goes back to seconds at the zoom
+        // of the moment.
+        let per_pixel = f64::from(self.lanes.seconds_per_pixel.max(1e-6));
+        let speed = self.coast.tracker.velocity(self.coast.clock()) / per_pixel;
+        let Some(glide) = crate::panes::glide::Glide::thrown(speed) else {
+            return;
+        };
+        let limit = self.duration().max(self.playhead);
+        self.coast.glide = Some((glide, std::time::Instant::now(), limit));
+        // A beat a frame, only while it moves: nothing is drawn for a glide
+        // that is not running.
+        self.glide_beat.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(16),
+            || {
+                crate::host::Shell::with(|shell, app| {
+                    shell.studio.borrow_mut().glide_step();
+                    shell.studio.borrow_mut().refresh_art();
+                    shell.studio.borrow().publish_lanes(&app, &shell.models);
+                });
+            },
+        );
+    }
+
+    /// One beat of a glide: as far as it has run since the last, never
+    /// before the start of the cut or past `limit`, and the end of it
+    /// when it has slowed to nothing or reached either.
+    fn glide_step(&mut self) {
+        let Some((mut glide, since, limit)) = self.coast.glide else {
+            self.glide_beat.stop();
+            return;
+        };
+        let (moved, going) = glide.step(since.elapsed().as_secs_f64());
+        let per_pixel = f64::from(self.lanes.seconds_per_pixel);
+        let wanted = f64::from(self.playhead) + moved * per_pixel;
+        let limit = f64::from(limit);
+        let reached = wanted <= 0.0 || wanted >= limit;
+        self.seek(wanted.clamp(0.0, limit) as f32);
+        if going && !reached {
+            self.coast.glide = Some((glide, since, limit as f32));
+        } else {
+            self.stop_glide();
+        }
+    }
+
+    /// Ends a glide, if one is running.
+    pub fn stop_glide(&mut self) {
+        self.coast.glide = None;
+        self.glide_beat.stop();
     }
 
     // ── the preview axis ──
@@ -3075,9 +3384,10 @@ impl Studio {
             return;
         };
         let project_path = session.path().to_owned();
-        // A file larger than HD gets a proxy for playback and the
-        // filmstrips, written once on the scheduler's proxy lane; see
-        // concat_host::proxy. Asked once per file per project.
+        // With proxies on in Settings, a file larger than HD gets a proxy
+        // for playback and the filmstrips, written once on the scheduler's
+        // proxy lane; see concat_host::proxy. Asked once per file per
+        // project. Off, the default, nothing is written.
         type Unproxied = (
             String,
             String,
@@ -3090,6 +3400,7 @@ impl Studio {
             .project()
             .media
             .iter()
+            .filter(|_| self.prefs.proxies)
             .filter(|item| item.kind == model::MediaKind::Video && !item.placeholder)
             .filter(|item| !self.proxied.contains(&item.id))
             .filter_map(|item| {
@@ -3727,6 +4038,10 @@ impl Studio {
         }
     }
 
+    fn volume_targets(&self) -> Vec<String> {
+        crate::batch_volume::targets(self.project(), &self.selection, |track| self.locked(track))
+    }
+
     pub fn sole_selection(&self) -> Option<String> {
         (self.selection.len() == 1).then(|| self.selection[0].clone())
     }
@@ -3802,7 +4117,7 @@ impl Studio {
         self.inspector_jump = (
             self.inspector_jump.0 + 1,
             if video { "Effects" } else { "Audio" },
-            if video { "Effects" } else { "Sound" },
+            if video { "Effects" } else { "AudioEffects" },
         );
     }
 
@@ -5014,7 +5329,12 @@ impl Studio {
     /// One field of the selected clip, on the echo. `clip_commit` turns the
     /// accumulated edits into commands.
     pub fn clip_set(&mut self, field: ClipField, value: f32) {
-        let ids = self.edit_targets();
+        let mut ids = self.edit_targets();
+        // A batch of sounds takes the level alone; see `batch_volume`.
+        let batch_volume = ids.is_empty() && field == ClipField::Volume;
+        if batch_volume {
+            ids = self.volume_targets();
+        }
         if ids.is_empty() {
             return;
         }
@@ -5054,9 +5374,24 @@ impl Studio {
                     .unwrap_or(value),
                 _ => value,
             };
+            // The clip as the document has it, for a batch level: a drag's
+            // every step is read against where it started, not against
+            // the last step, so a ride's shape is not worn down on the way.
+            let original = batch_volume
+                .then(|| {
+                    self.session
+                        .as_ref()
+                        .and_then(|session| session.project().active().clip(&id))
+                        .cloned()
+                })
+                .flatten();
             let Some(clip) = self.echo_clip_mut(&id) else {
                 continue;
             };
+            if let Some(original) = original {
+                crate::batch_volume::set_level(clip, &original, value, at);
+                continue;
+            }
             let text = clip.text.get_or_insert_with(TextStyle::default);
             match field {
                 ClipField::Scale => {
@@ -6243,10 +6578,26 @@ impl Studio {
             .into_iter()
             .map(|(media_id, request)| (Self::analysis_key(&media_id, request.subject), request))
             .collect();
-        let Some((id, request)) = wanted
-            .into_iter()
-            .find(|(_, request)| Cutouts::outstanding(request) > 0)
-        else {
+        // One the app died analysing last time is skipped, and said once:
+        // starting it again by itself closed the app on every open.
+        let mut next = None;
+        for (id, request) in wanted {
+            if Cutouts::outstanding(&request) == 0 {
+                continue;
+            }
+            if Cutouts::tripped(&request) {
+                let dir =
+                    concat_vision::mask_dir(&request.project, &request.media_path, request.subject);
+                if self.tripped_strokes.insert(dir) {
+                    log::warn!("cutout: media the app closed while analysing is skipped");
+                    self.notify(&t("studio.removeBackgroundSkipped"), true);
+                }
+                continue;
+            }
+            next = Some((id, request));
+            break;
+        }
+        let Some((id, request)) = next else {
             return;
         };
         self.cutout_jobs.insert(id.clone(), (false, 0.0));
@@ -6299,10 +6650,11 @@ impl Studio {
     // an enhanced copy into the project's cache; the clip is then pointed
     // at the copy, as one undo step, and shows it wherever it showed the
     // original. The window's part is to start the job, keep the readout
-    // moving, and re-point the clip when the copy is whole.
+    // moving, and re-point the clip when the copy is whole. Before that,
+    // it holds the section's Size and Strength and runs a preview of the
+    // frame under the playhead, so the person can judge both - and see
+    // what the whole run will cost - before committing minutes to it.
 
-    /// Enhances the media of clip `id`: starts the job, unless one is
-    /// running, and says so.
     /// Writes one clip's sound as it plays - trimmed, at its speed, with its
     /// level, fades and effects baked in - to a WAV in the project's audio
     /// folder, and puts the file in the bin under Generated › Processed. A
@@ -6468,9 +6820,16 @@ impl Studio {
         );
     }
 
-    /// The Enhance switch in the inspector, for the one selected clip. A
-    /// clip with a copy shows it or its original; one without starts
-    /// Enhance on the switch going on, and stops a run on it going off.
+    /// The Enhance tick in the inspector, for the one selected clip. It
+    /// never starts a run - that is minutes of the machine, and the
+    /// button's to ask for. Ticked, the section's settings and button come
+    /// alive. On a clip with a copy it also switches the clip between the
+    /// copy and its original, one undo step, the copy kept in the bin and
+    /// the cache so ticking again shows it at once.
+    ///
+    /// Unticked means the clip shows its original, so a run still going
+    /// for it is stopped: left alone, it would put the copy on screen when
+    /// it finished, under a tick that says it is off.
     pub fn clip_enhance_set(&mut self, on: bool) {
         let Some(id) = self.sole_selection() else {
             return;
@@ -6481,18 +6840,211 @@ impl Studio {
         if self.locked(&clip.track_id) {
             return;
         }
-        if clip.enhanced.is_some() {
+        let linked = clip.enhanced.is_some();
+        if !on && self.enhance_jobs.contains_key(&id) {
+            self.host.enhancers.cancel();
+        }
+        if on {
+            self.enhance_ticked.insert(id.clone());
+        } else {
+            self.enhance_ticked.remove(&id);
+        }
+        if linked {
             self.apply(Command::SetClipEnhanced { clip_id: id, on });
             self.request_preview();
-        } else if on {
-            self.enhance_clip(&id);
-        } else if self.enhance_jobs.contains_key(&id) {
-            self.host.enhancers.cancel();
         }
     }
 
+    /// Whether clip `clip`'s Enhance section is ticked: its copy shown, or,
+    /// without a copy, the tick put on in this window.
+    fn enhance_ticked(&self, clip: &Clip) -> bool {
+        match clip.enhanced.as_ref() {
+            Some(link) => link.on,
+            None => self.enhance_ticked.contains(&clip.id),
+        }
+    }
+
+    /// The Size row: 0 Auto, then once, twice and four times. A size this
+    /// clip cannot take is greyed in the row, and one carried here from a
+    /// smaller clip falls to the largest that fits; see
+    /// `concat_vision::enhance::factor_of`.
+    pub fn clip_enhance_size(&mut self, index: i32) {
+        self.enhance_size = match index {
+            1 => 1,
+            2 => 2,
+            3 => 4,
+            _ => 0,
+        };
+    }
+
+    /// The Strength row, 0 to 1: how much of the model's answer the copy
+    /// keeps. A preview on screen is re-blended at once, which is the
+    /// point of keeping both its halves.
+    pub fn clip_enhance_strength(&mut self, strength: f32) {
+        self.enhance_strength = strength.clamp(0.0, 1.0);
+        let strength = self.enhance_strength;
+        if let Some(preview) = self.enhance_preview.as_mut() {
+            preview.blend_at(strength);
+        }
+    }
+
+    /// The section's one button: Enhance, or Enhance again on a clip that
+    /// has a copy - a run from the original with the settings as they are
+    /// now, a copy those settings already made picked up at once rather
+    /// than redone - and Terminate while this clip's run is going. Only on
+    /// a ticked section, as the button is.
+    pub fn clip_enhance_run(&mut self) {
+        let Some(id) = self.sole_selection() else {
+            return;
+        };
+        // Terminate: the run under way for this clip stops after the frame
+        // in hand, and its partial files go; the clip is re-pointed only on
+        // a copy that is whole, so it stays as it was.
+        if self.enhance_jobs.contains_key(&id) {
+            self.host.enhancers.cancel();
+            return;
+        }
+        if self
+            .clip(&id)
+            .is_some_and(|clip| !self.locked(&clip.track_id) && self.enhance_ticked(clip))
+        {
+            self.enhance_clip(&id);
+        }
+    }
+
+    /// The file Enhance reads for `clip`: its original when it is showing,
+    /// or holding, a copy already - a second run restores the source, not
+    /// the first run's answer.
+    fn enhance_source(&self, clip: &Clip) -> Option<model::MediaItem> {
+        let id = clip
+            .enhanced
+            .as_ref()
+            .map_or(&clip.media_id, |link| &link.original);
+        self.project()
+            .media
+            .iter()
+            .find(|item| &item.id == id)
+            .cloned()
+    }
+
+    /// How many times larger `media` comes out at the section's Size.
+    fn enhance_factor(&self, media: &model::MediaItem) -> u32 {
+        concat_vision::enhance::factor_of(
+            self.enhance_size,
+            media.width.unwrap_or(0),
+            media.height.unwrap_or(0),
+        )
+    }
+
+    /// "Preview this frame": the middle of the frame of the selected clip
+    /// under the playhead, through the model at the section's Size, shown
+    /// before and after in the inspector. Seconds rather than minutes - a
+    /// few tiles, not a file - and nothing is written or re-pointed, so the
+    /// clip is as it was whatever comes of it.
+    pub fn clip_enhance_preview(&mut self) {
+        let Some(id) = self.sole_selection() else {
+            return;
+        };
+        if self.enhance_previewing.is_some()
+            || !self.enhance_jobs.is_empty()
+            || self.host.enhancers.is_busy()
+        {
+            self.notify(&t("studio.enhanceAlreadyWorkOne"), true);
+            return;
+        }
+        let Some(clip) = self.clip(&id).cloned() else {
+            return;
+        };
+        if clip.kind != model::ClipKind::Video && clip.kind != model::ClipKind::Image {
+            return;
+        }
+        let Some(media) = self.enhance_source(&clip) else {
+            return;
+        };
+        if media.width.unwrap_or(0) == 0 || media.height.unwrap_or(0) == 0 {
+            self.notify(&t("studio.fileHasNoPicture"), true);
+            return;
+        }
+        let factor = self.enhance_factor(&media);
+        let seconds = if clip.kind == model::ClipKind::Image {
+            0.0
+        } else {
+            self.source_at_playhead(&clip)
+        };
+        let request = concat_host::enhance::PreviewRequest {
+            media_path: media.path.clone(),
+            seconds,
+            factor,
+        };
+        self.enhance_previewing = Some((id.clone(), false, 0.0));
+        let enhancers = Arc::clone(&self.host.enhancers);
+        let epoch = crate::host::project_epoch();
+        let media_id = media.id.clone();
+        spawn_in_project(
+            move || {
+                let mut last = -1.0f32;
+                let result = enhancers.preview(&request, &mut |progress| {
+                    // The model's download is the one slow part a preview
+                    // can have; the tiles themselves take seconds.
+                    if let concat_host::enhance::Progress::Fetching { received, total } = progress {
+                        let fraction = received as f32 / total.max(1) as f32;
+                        if fraction - last >= 0.01 {
+                            last = fraction;
+                            on_ui_in_project(epoch, move |studio, _, _| {
+                                if let Some(held) = studio.enhance_previewing.as_mut() {
+                                    held.1 = true;
+                                    held.2 = fraction;
+                                }
+                            });
+                        }
+                    }
+                });
+                (id, media_id, factor, result)
+            },
+            |studio, _, _, (clip_id, media_id, factor, result)| {
+                studio.enhance_previewing = None;
+                match result {
+                    Ok(preview) => {
+                        let mut made = EnhancePreview {
+                            clip_id,
+                            media_id,
+                            factor,
+                            before: image_of(&preview.plain),
+                            after: image_of(&preview.enhanced),
+                            after_percent: 100,
+                            plain: preview.plain,
+                            enhanced: preview.enhanced,
+                            tile_seconds: preview.tile_seconds,
+                            tiles_per_frame: preview.tiles_per_frame,
+                        };
+                        made.blend_at(studio.enhance_strength);
+                        studio.enhance_preview = Some(made);
+                    }
+                    Err(error) if error.contains("cancelled") => {}
+                    Err(error) => studio.notify(&tf("studio.enhance", &[&error]), true),
+                }
+            },
+        );
+    }
+
+    /// The preview on screen for `clip` read from `media` at `factor`, if
+    /// the last one made is that.
+    fn enhance_preview_for(
+        &self,
+        clip: &Clip,
+        media: &model::MediaItem,
+        factor: u32,
+    ) -> Option<&EnhancePreview> {
+        self.enhance_preview.as_ref().filter(|preview| {
+            preview.clip_id == clip.id && preview.media_id == media.id && preview.factor == factor
+        })
+    }
+
     pub fn enhance_clip(&mut self, id: &str) {
-        if !self.enhance_jobs.is_empty() || self.host.enhancers.is_busy() {
+        if !self.enhance_jobs.is_empty()
+            || self.enhance_previewing.is_some()
+            || self.host.enhancers.is_busy()
+        {
             self.notify(&t("studio.enhanceAlreadyWorkOne"), true);
             return;
         }
@@ -6502,13 +7054,7 @@ impl Studio {
         if clip.kind != model::ClipKind::Video && clip.kind != model::ClipKind::Image {
             return;
         }
-        let Some(media) = self
-            .project()
-            .media
-            .iter()
-            .find(|item| item.id == clip.media_id)
-            .cloned()
-        else {
+        let Some(media) = self.enhance_source(&clip) else {
             return;
         };
         let Some(session) = self.session.as_ref() else {
@@ -6520,9 +7066,11 @@ impl Studio {
             self.notify(&t("studio.fileHasNoPicture"), true);
             return;
         }
-        let factor = concat_vision::enhance::factor_for(width, height);
+        let factor = self.enhance_factor(&media);
+        let strength = self.enhance_strength;
         let still = clip.kind == model::ClipKind::Image;
-        let Some(target) = concat_host::enhance::target_for(&project, &media.path, factor, still)
+        let Some(target) =
+            concat_host::enhance::target_for(&project, &media.path, factor, strength, still)
         else {
             self.notify(&tf("studio.couldNotRead", &[&media.path]), true);
             return;
@@ -6531,8 +7079,10 @@ impl Studio {
             media_path: media.path.clone(),
             still,
             factor,
+            strength,
             target,
         };
+        let percent = concat_host::enhance::strength_percent(strength);
         let clip_id = clip.id.clone();
         self.enhance_jobs.insert(clip_id.clone(), (false, 0.0));
         self.notify(
@@ -6564,10 +7114,22 @@ impl Studio {
                 });
                 (clip_id, result)
             },
-            |studio, _, _, (clip_id, result)| {
+            move |studio, _, _, (clip_id, result)| {
                 studio.enhance_jobs.remove(&clip_id);
+                // A cancelled or failed run leaves the clip as it was: the
+                // job writes under partial names and the clip is only
+                // re-pointed here, on a copy that is whole. Nor is a clip
+                // whose tick went off as the run finished: the copy stays
+                // in the cache, and ticking and Enhance again find it.
+                let ticked = studio
+                    .clip(&clip_id)
+                    .is_some_and(|clip| studio.enhance_ticked(clip));
                 match result {
-                    Ok(path) => studio.adopt_enhanced(&clip_id, &path),
+                    Ok(path) if ticked => {
+                        studio.enhance_ticked.remove(&clip_id);
+                        studio.adopt_enhanced(&clip_id, &path, factor, percent);
+                    }
+                    Ok(_) => {}
                     Err(error) if error.contains("cancelled") => {}
                     Err(error) => studio.notify(&tf("studio.enhance", &[&error]), true),
                 }
@@ -6696,7 +7258,7 @@ impl Studio {
 
     /// Points clip `id` at the enhanced copy at `path`, probed the way an
     /// import is, and shows it.
-    fn adopt_enhanced(&mut self, id: &str, path: &std::path::Path) {
+    fn adopt_enhanced(&mut self, id: &str, path: &std::path::Path, factor: u32, percent: u32) {
         let summary = match media::probe(&path.to_string_lossy()) {
             Ok(summary) => summary,
             Err(error) => {
@@ -6705,13 +7267,11 @@ impl Studio {
             }
         };
         let mut item = summary.to_new_media();
-        // The bin names the copy after the original, marked, rather than
-        // after its cache file.
-        if let Some(original) = self
-            .clip(id)
-            .and_then(|clip| self.project().media.iter().find(|m| m.id == clip.media_id))
-        {
-            item.name = format!("{} (enhanced)", original.name);
+        // The bin names the copy after the original, marked with what it
+        // was made with - one file can have a copy for each setting -
+        // rather than after its cache file.
+        if let Some(original) = self.clip(id).and_then(|clip| self.enhance_source(clip)) {
+            item.name = format!("{} (enhanced {factor}x, {percent}%)", original.name);
         }
         self.apply(Command::ReplaceClipMedia {
             clip_id: id.to_owned(),
@@ -6961,57 +7521,76 @@ impl Studio {
             .collect()
     }
 
-    /// Q / E: the selected clip is cut at the playhead - Q drops its left
-    /// up to there, E its right from there on, as one undo step. Like any
-    /// trim, the lane closes behind the edge only on a magnetic timeline,
-    /// which slides the footage out from under the playhead and leaves it
-    /// past the cut; the playhead is then carried to the edge itself - Q
-    /// to the new head, E to the new tail - where the cut now is.
-    pub fn cut_to_playhead(&mut self, left: bool) {
-        let Some(clip_id) = self.sole_selection() else {
-            self.notify(&t("studio.selectClipTimelineFirst"), true);
-            return;
-        };
-        let Some(clip) = self.clip(&clip_id).cloned() else {
-            return;
-        };
-        if self.locked(&clip.track_id) {
-            return;
-        }
+    /// Delete Left / Delete Right, CapCut's Q and W: the selected clips the
+    /// playhead runs through lose everything before it, or everything
+    /// after it, as one undo step. With nothing selected, the one clip
+    /// under the playhead is cut; with several there and none chosen, a
+    /// notice asks for one rather than guessing - a caption over the
+    /// picture is as much "the clip" as the picture is. The lane closes
+    /// behind the cut only on a magnetic timeline, as any trim's does.
+    /// https://github.com/jub0t/Concat/issues/400
+    pub fn delete_to_playhead(&mut self, side: PlayheadSide) {
         let at = f64::from(self.playhead);
-        // Nothing is cut unless the playhead sits inside the clip, as
-        // split_at requires of its cuts.
-        if !(clip.start + f64::from(MIN_DURATION) < at
-            && at < clip.start + clip.duration - f64::from(MIN_DURATION))
-        {
-            return;
-        }
-        let (edge, delta) = if left {
-            (TrimEdge::Start, at - clip.start)
+        let edge = f64::from(MIN_DURATION);
+        let under: Vec<String> = self
+            .timeline()
+            .clips
+            .iter()
+            .filter(|clip| {
+                clip.start + edge < at
+                    && at < clip.start + clip.duration - edge
+                    && !self.locked(&clip.track_id)
+            })
+            .map(|clip| clip.id.clone())
+            .collect();
+        let targets: Vec<String> = if self.selection.is_empty() {
+            if under.len() > 1 {
+                self.notify(&t("studio.selectClipToCut"), true);
+                return;
+            }
+            under
         } else {
-            (TrimEdge::End, at - (clip.start + clip.duration))
+            under
+                .into_iter()
+                .filter(|id| self.selection.contains(id))
+                .collect()
         };
-        // Where the cut leaves off. On a magnetic lane the footage has
-        // slid, so the playhead is no longer sitting on the cut: carry it
-        // to the edge - Q's new head, E's new tail. Trim follow asks a
-        // dragged edge for the same, and Q of it with no lane magnetising.
-        let follow = self.prefs.magnetic || (left && self.prefs.trim_follow);
-        self.apply(Command::TrimClip {
-            clip_id: clip_id.clone(),
-            edge,
-            delta,
-            ripple: self.prefs.magnetic,
-        });
-        if follow {
-            let landed = self.clip(&clip_id).map(|clip| {
-                if left {
-                    clip.start
-                } else {
-                    clip.start + clip.duration
-                }
-            });
-            if let Some(landed) = landed {
-                self.seek(landed as f32);
+        self.delete_clips_to_playhead(&targets, side);
+    }
+
+    /// The cut itself, on these clips; see [`Self::delete_to_playhead`].
+    /// A Delete Left ends with the playhead on the frame it was showing,
+    /// which a magnetic cut has moved back to the clip's start.
+    fn delete_clips_to_playhead(&mut self, ids: &[String], side: PlayheadSide) {
+        let at = f64::from(self.playhead);
+        let ids: Vec<String> = ids
+            .iter()
+            .filter(|id| {
+                self.clip(id)
+                    .is_some_and(|clip| !self.locked(&clip.track_id))
+            })
+            .cloned()
+            .collect();
+        let Some(command) = concat_project::delete_to_playhead(
+            self.timeline(),
+            &ids,
+            at,
+            side,
+            self.prefs.magnetic,
+        ) else {
+            self.notify(&t("studio.parkPlayheadInsideClip"), true);
+            return;
+        };
+        self.flush_commit();
+        self.apply(command);
+        if side == PlayheadSide::Left {
+            let start = ids
+                .iter()
+                .filter_map(|id| self.clip(id))
+                .map(|clip| clip.start)
+                .fold(f64::INFINITY, f64::min);
+            if start.is_finite() && start < at {
+                self.seek(start as f32);
             }
         }
     }
@@ -7219,27 +7798,6 @@ impl Studio {
             });
         }
         self.selection.clear();
-    }
-
-    pub fn merge_blocked(&self) -> Option<String> {
-        if self.selection.len() != 2 {
-            return Some(t("studio.selectTwoClipsMerge"));
-        }
-        why_not_merge(self.timeline(), &self.selection)
-    }
-
-    pub fn merge(&mut self) {
-        if self.merge_blocked().is_some() {
-            return;
-        }
-        let ids = self.selection.clone();
-        let kept = ids[0].clone();
-        self.apply(Command::MergeClips { clip_ids: ids });
-        self.selection = if self.clip(&kept).is_some() {
-            vec![kept]
-        } else {
-            Vec::new()
-        };
     }
 
     /// A freeze frame at the playhead on a picture clip.
@@ -7489,11 +8047,8 @@ impl Studio {
     /// trims, mix, placement, speed, keys and effects with it - and says
     /// the new clip's id. `gesture` folds the commands into one undo step
     /// with whatever else names it; `None` leaves them steps of their own.
-    ///
-    /// Footage is laid down covering exactly the span of the source at
-    /// normal speed, from the source's own in-point, then retimed: the
-    /// speed command keeps the footage covered and recomputes the length,
-    /// so the copy ends up the source's length over the source's frames.
+    /// Footage is first laid past the lane's last clip, then shaped by
+    /// [`copy_commands`].
     fn place_copy(
         &mut self,
         source: &Clip,
@@ -7527,73 +8082,24 @@ impl Studio {
                 },
             );
         }
-        // The in-point is set, not trimmed back into place. A copy laid
-        // out at the head of a file and trimmed to its in-point only
-        // works where the position reaches past that in-point: below it
-        // the head trim clamps at zero, leaves the copy playing the file
-        // from its start, and only the length still comes out right. A
-        // section cut from later in a file is exactly that case.
-        let covered = source.duration * source.speed;
+        let lane_end = self
+            .timeline()
+            .clips
+            .iter()
+            .filter(|clip| clip.track_id == track_id)
+            .map(|clip| clip.start + clip.duration)
+            .fold(0.0, f64::max);
         let created = self.apply_in(
             gesture,
-            Command::AddClipSpan {
+            Command::AddClip {
                 media_id: source.media_id.clone(),
                 track_id: track_id.to_owned(),
-                start,
-                source_start: source.source_start,
-                duration: covered,
+                start: lane_end,
+                ripple: false,
             },
         )?;
-        let mut commands = Vec::new();
-        if (source.speed - 1.0).abs() > 1e-9 {
-            commands.push(Command::SetClipSpeed {
-                clip_id: created.clone(),
-                speed: source.speed,
-            });
-        }
-        if source.speed_curve.is_some() {
-            commands.push(Command::SetClipSpeedCurve {
-                clip_id: created.clone(),
-                curve: source.speed_curve.clone(),
-            });
-        }
-        commands.push(Command::SetClipTransform {
-            clip_id: created.clone(),
-            scale: Some(source.scale),
-            offset_x: Some(source.offset_x),
-            offset_y: Some(source.offset_y),
-            rotation: Some(source.rotation),
-            stretch_x: Some(source.stretch_x),
-            stretch_y: Some(source.stretch_y),
-        });
-        for key in &source.keys {
-            commands.push(Command::SetClipKey {
-                clip_id: created.clone(),
-                property: key.property,
-                at: key.at,
-                value: key.value,
-                ease: key.ease,
-            });
-        }
-        commands.push(Command::UpdateClip {
-            clip_id: created.clone(),
-            patch: ClipPatch {
-                name: Some(format!("{} copy", source.name)),
-                volume: Some(source.volume),
-                fade_in: Some(source.fade_in),
-                fade_out: Some(source.fade_out),
-                opacity: Some(source.opacity),
-                preserve_pitch: Some(source.preserve_pitch),
-                muted: source.muted,
-                flip_h: Some(source.flip_h),
-                flip_v: Some(source.flip_v),
-                blend: Some(source.blend.clone()),
-                crop: Some(source.crop),
-                filters: Some(source.filters.clone()),
-                video_effects: Some(source.video_effects.clone()),
-                ..ClipPatch::default()
-            },
-        });
+        let placed = self.clip(&created).cloned()?;
+        let commands = copy_commands(source, &placed, track_id, start);
         self.apply_in(gesture, Command::Batch { commands });
         Some(created)
     }
@@ -7843,25 +8349,56 @@ impl Studio {
     }
 
     /// Saves, then closes the session and returns to the launch screen.
-    pub fn close_project(&mut self) {
+    ///
+    /// A save that fails returns its reason and stops short of the close:
+    /// the session, its running jobs and the autosave timer are left as they
+    /// were, so a caller that was about to hide the window or quit can keep
+    /// it up rather than drop unsaved work on the floor. Not untouched, to be
+    /// exact - the close flushes a half-typed commit and pauses playback
+    /// before it saves, and a failed save leaves those two as done. What a
+    /// failure does not reach is the teardown: the worker cancellations, the
+    /// job lists, the autosave timer and the session itself.
+    pub fn close_project(&mut self) -> Result<(), String> {
         log::info!("project: closing {}", self.project_name);
         // Words still being typed land in the save, not on the floor.
         self.flush_commit();
         self.pause();
+        // Saved before the workers are cancelled: a close that cannot be
+        // written is not a close, and the jobs it would have stopped are
+        // not ours to throw away.
+        if let Some(session) = self.session.as_mut() {
+            let (path, document) = session.prepare_save(None);
+            let ticket = projects::ticket();
+            if let Err(error) = projects::save_ordered(&path, &document, ticket) {
+                log::warn!("project: could not be saved, not closing: {error}");
+                self.notify(&tf("studio.couldNotSave", &[&error]), true);
+                return Err(error);
+            }
+        }
+        self.release_project();
+        Ok(())
+    }
+
+    /// Asks whether to quit though the project could not be saved: the
+    /// window's ways out call it when `close_project` refused.
+    pub fn offer_quit_without_saving(&mut self, error: String) {
+        self.confirm = Some(Confirm::QuitWithoutSaving { error });
+    }
+
+    /// Lets the open project go, unsaved: what `close_project` does once
+    /// the save has landed, and what quitting without saving does instead.
+    fn release_project(&mut self) {
         self.host.cutouts.cancel();
         self.host.enhancers.cancel();
         self.host.reversers.cancel();
         self.enhance_jobs.clear();
+        self.enhance_preview = None;
+        self.enhance_previewing = None;
+        self.enhance_ticked.clear();
         self.reverse_jobs.clear();
+        self.cancel_merge();
         self.cutout_jobs.clear();
         self.region_job = None;
-        if let Some(session) = self.session.as_mut() {
-            let (path, document) = session.prepare_save(None);
-            if let Err(error) = projects::save(&path, &document) {
-                self.notify(&tf("studio.couldNotSave", &[&error]), true);
-                return;
-            }
-        }
         self.autosave.stop();
         if let Some(session) = self.session.as_ref() {
             self.host.open_projects.release(session.path());
@@ -7875,9 +8412,9 @@ impl Studio {
         self.art_stamp = None;
         self.proxied.clear();
         self.captions.running = false;
-        self.captions.progress = 0.0;
+        self.captions.pace = Default::default();
         self.speech.running = false;
-        self.speech.progress = 0.0;
+        self.speech.pace = Default::default();
         self.source = None;
         // A take running as the project closes stops, keeping its file;
         // the next project's speakers are not left silent.
@@ -8035,7 +8572,9 @@ impl Studio {
             return;
         }
         self.cards_busy = true;
-        let compositor = self.host.monitor.sibling();
+        // On a thread of its own, so not on the window's device on Vulkan
+        // (#324).
+        let compositor = self.host.monitor.off_thread();
         let spawned = std::thread::Builder::new()
             .name("concat cards".to_owned())
             .spawn(move || {
@@ -8292,6 +8831,8 @@ impl Studio {
         editor.set_keys_redo(hint("redo").into());
         editor.set_keys_split(hint("split").into());
         editor.set_keys_split_tool(hint("split-tool").into());
+        editor.set_keys_delete_left(hint("delete-left").into());
+        editor.set_keys_delete_right(hint("delete-right").into());
         editor.set_keys_pan(hint("pan").into());
         editor.set_keys_preview_axis(hint("preview-axis").into());
         self.publish_lanes_one(app, models);
@@ -8303,12 +8844,16 @@ impl Studio {
         let out = self.dock_layout();
         sync(&models.seats, out.seats);
         sync(&models.dividers, out.dividers);
+        // A timeline put back while something plays brings its meters
+        // with it; one taken away stops them at their next tick.
+        self.wake_meters();
     }
 
     /// The window is a phone's: the lanes keep the playhead at their middle
     /// and glide under it. See `platform::phone` and `TimelinePane::centred`.
     pub fn set_phone(&mut self, phone: bool) {
         self.lanes.centred = phone;
+        self.meters.phone = phone;
         let playhead = self.playhead;
         self.lanes.recentre(playhead);
     }
@@ -8557,6 +9102,9 @@ impl Studio {
 
         editor.set_selected_clip(self.selected());
         editor.set_selected_transition(self.selected_transition_data());
+        // The background and Fit and Fill, on their own global: the Details
+        // panel, the Video panel and the phone all read it.
+        self.publish_backdrop(app);
         // Written only when it differs: a fresh model is a change to every
         // binding that reads it, and this one is read on every publish.
         let labels = self.audio_track_labels();
@@ -8628,6 +9176,7 @@ impl Studio {
         editor.set_snap(self.lanes.snap);
         editor.set_magnetic(self.prefs.magnetic);
         editor.set_trim_follow(self.prefs.trim_follow);
+        editor.set_meters_shown(self.prefs.meters_shown());
         editor.set_preview_axis(self.prefs.preview_axis);
         editor.set_preview_axis_audio(self.prefs.preview_axis_audio);
         editor.set_filmstrip(self.prefs.filmstrip);
@@ -8648,6 +9197,7 @@ impl Studio {
         editor.set_picture_selected(picture_selected);
         editor.set_freezable(freezable);
         editor.set_reversible(reversible);
+        editor.set_merge_label(self.merge_label().into());
         editor.set_merge_blocked_because(match self.merge_blocked() {
             Some(reason) => reason.into(),
             None => SharedString::new(),
@@ -9646,7 +10196,7 @@ impl Studio {
         let transition = clip.transition_in.as_ref().expect("held to one");
         let name = Catalogue::builtin()
             .get(&transition.id)
-            .map(|package| i18n::package_text(package.id(), "name", &package.manifest.effect.name))
+            .map(|package| package.manifest.effect.name.clone())
             .unwrap_or_else(|| label_of(&transition.id));
         crate::ui::SelectedTransitionData {
             present: true,
@@ -9657,9 +10207,13 @@ impl Studio {
     }
 
     fn selected(&self) -> SelectedClipData {
-        // The one clip, or the first of a batch of titles: the panel shows
-        // its values and writes to all of them; see `edit_targets`.
-        let targets = self.edit_targets();
+        // Titles share their styling controls; a sound batch exposes volume
+        // alone, using the first unlocked clip as the displayed reference.
+        let mut targets = self.edit_targets();
+        let batch_volume = targets.is_empty();
+        if batch_volume {
+            targets = self.volume_targets();
+        }
         let Some(clip) = targets.first().and_then(|id| self.clip(id)) else {
             return SelectedClipData::default();
         };
@@ -9681,9 +10235,14 @@ impl Studio {
                 .get(&Self::analysis_key(&clip.media_id, cutout.subject))
                 .copied()
         });
+        let mut enhance = self.enhance_readout(clip);
+        let enhance_preview = enhance.preview.is_some();
+        let (enhance_before, enhance_after, enhance_estimate) =
+            enhance.preview.take().unwrap_or_default();
         SelectedClipData {
             present: true,
             batch: targets.len() as i32,
+            batch_volume,
             frame_width: self.output_size().0 as i32,
             frame_height: self.output_size().1 as i32,
             id: clip.id.as_str().into(),
@@ -9700,9 +10259,7 @@ impl Studio {
                 .transition_in
                 .as_ref()
                 .and_then(|transition| Catalogue::builtin().get(&transition.id))
-                .map(|package| {
-                    i18n::package_text(package.id(), "name", &package.manifest.effect.name)
-                })
+                .map(|package| package.manifest.effect.name.clone())
                 .unwrap_or_default()
                 .into(),
             transition_duration: clip
@@ -9803,9 +10360,98 @@ impl Studio {
                 .is_some_and(|(fetching, _)| *fetching),
             reverse_progress: self.reverse_jobs.get(&clip.id).copied().unwrap_or(-1.0),
             enhance_linked: clip.enhanced.is_some(),
-            enhance_on: clip.enhanced.as_ref().is_some_and(|link| link.on)
-                || self.enhance_jobs.contains_key(&clip.id),
+            enhance_on: self.enhance_ticked(clip),
+            enhance_busy: !self.enhance_jobs.is_empty() || self.enhance_previewing.is_some(),
+            enhance_size: enhance.size,
+            enhance_auto: enhance.auto as i32,
+            enhance_fits_2x: enhance.fits_2x,
+            enhance_fits_4x: enhance.fits_4x,
+            enhance_size_note: enhance.size_note.into(),
+            enhance_strength: self.enhance_strength,
+            enhance_previewing: self
+                .enhance_previewing
+                .as_ref()
+                .is_some_and(|(id, _, _)| *id == clip.id),
+            enhance_preview_fetch: self
+                .enhance_previewing
+                .as_ref()
+                .filter(|(id, fetching, _)| *id == clip.id && *fetching)
+                .map(|(_, _, fraction)| *fraction)
+                .unwrap_or(-1.0),
+            enhance_preview,
+            enhance_before,
+            enhance_after,
+            enhance_estimate: enhance_estimate.into(),
         }
+    }
+
+    /// What the Enhance section shows for `clip` beyond its switch: the
+    /// sizes its file can take, the preview made for it at the section's
+    /// settings, if there is one, and what a whole run would cost.
+    fn enhance_readout(&self, clip: &Clip) -> EnhanceReadout {
+        let mut readout = EnhanceReadout::default();
+        let Some(media) = self.enhance_source(clip) else {
+            return readout;
+        };
+        let (width, height) = (media.width.unwrap_or(0), media.height.unwrap_or(0));
+        let limit = concat_vision::enhance::LONGEST_SIDE;
+        let factor = self.enhance_factor(&media);
+        readout.auto = concat_vision::enhance::factor_for(width, height);
+        readout.fits_2x = concat_vision::enhance::fits(width, height, 2);
+        readout.fits_4x = concat_vision::enhance::fits(width, height, 4);
+        // The row shows what will happen: Auto as Auto, and an ask this
+        // file cannot take as the size it falls to.
+        readout.size = match (self.enhance_size, factor) {
+            (0, _) => 0,
+            (_, 1) => 1,
+            (_, 2) => 2,
+            _ => 3,
+        };
+        readout.size_note = if !readout.fits_2x {
+            tf("studio.enhanceOnlyRestore", &[&width.max(height), &limit])
+        } else if !readout.fits_4x {
+            tf(
+                "studio.enhanceNoFourTimes",
+                &[&(width * 4), &(height * 4), &limit],
+            )
+        } else {
+            String::new()
+        };
+        readout.preview = self
+            .enhance_preview_for(clip, &media, factor)
+            .map(|preview| {
+                // The model's work on the whole file - every frame of it,
+                // not only the span the clip shows - at the warm tile time
+                // the preview measured.
+                let frames = if clip.kind == model::ClipKind::Image {
+                    1.0
+                } else {
+                    media.duration.unwrap_or(0.0) * media.frame_rate.unwrap_or(30.0)
+                };
+                let per_frame = preview.tile_seconds * preview.tiles_per_frame as f64;
+                let total = concat_host::enhance::estimate_seconds(
+                    preview.tile_seconds,
+                    preview.tiles_per_frame,
+                    frames,
+                );
+                let estimate = if clip.kind == model::ClipKind::Image {
+                    tf(
+                        "studio.enhanceEstimateStill",
+                        &[&crate::format::span(total)],
+                    )
+                } else {
+                    tf(
+                        "studio.enhanceEstimate",
+                        &[
+                            &crate::format::span(total),
+                            &format!("{:.0}", frames.max(1.0)),
+                            &format!("{per_frame:.1}"),
+                        ],
+                    )
+                };
+                (preview.before.clone(), preview.after.clone(), estimate)
+            });
+        readout
     }
 
     /// The source instant of `clip` under the playhead, held to the clip.
@@ -9853,6 +10499,7 @@ impl Studio {
         };
         let project = std::path::PathBuf::from(session.path());
         let mut next: Option<(String, RegionRequest)> = None;
+        let mut tripped = Vec::new();
         'clips: for clip in &self.timeline().clips {
             let Some(cutout) = clip.cutout.as_ref() else {
                 continue;
@@ -9878,10 +10525,24 @@ impl Studio {
                     ranges: vec![range],
                     stroke: stroke.clone(),
                 };
-                if request.outstanding() {
-                    next = Some((Self::analysis_key(&media.id, cutout.subject), request));
-                    break 'clips;
+                if !request.outstanding() {
+                    continue;
                 }
+                // The app died reading this one last time: reading it
+                // again by itself closed the app on every open, with the
+                // project shut inside. Painting the stroke again reads it.
+                if request.tripped() {
+                    tripped.push(request.dir());
+                    continue;
+                }
+                next = Some((Self::analysis_key(&media.id, cutout.subject), request));
+                break 'clips;
+            }
+        }
+        for dir in tripped {
+            if self.tripped_strokes.insert(dir) {
+                log::warn!("smart brush: a stroke the app closed while reading is skipped");
+                self.notify(&t("studio.smartBrushSkipped"), true);
             }
         }
         let Some((key, request)) = next else {
@@ -10199,6 +10860,8 @@ impl Studio {
         );
         app.set_speech(self.speech.data(self));
         self.publish_source(app);
+        sync(&models.voiceover_devices, self.voiceover.device_rows());
+        app.set_voiceover(self.voiceover.data(self));
         editor.set_recording(self.voiceover.recording());
 
         let bar = self.menu_bar();
@@ -10222,6 +10885,8 @@ impl Studio {
             self.revision,
             self.on_start,
             self.art_pending.len() + self.posters_pending.len(),
+            // Proxies switched on in Settings are seen to at once.
+            self.prefs.proxies,
         );
         if self.art_stamp == Some(stamp) {
             if !self.on_start {
@@ -10309,6 +10974,29 @@ impl Studio {
                 &keymap::label(&self.prefs, "split"),
                 straddled && !locked,
             ),
+            // CapCut's Delete Left and Right, here as on the keys; on a
+            // phone, whose More is this menu, the only way to them.
+            action(
+                "delete-left",
+                t("shortcuts.deleteLeft"),
+                Glyph::None,
+                &keymap::label(&self.prefs, "delete-left"),
+                straddled && !locked,
+            ),
+            action(
+                "delete-right",
+                t("shortcuts.deleteRight"),
+                Glyph::None,
+                &keymap::label(&self.prefs, "delete-right"),
+                straddled && !locked,
+            ),
+            action(
+                "merge",
+                self.merge_label(),
+                Glyph::Merge,
+                "",
+                self.merge_blocked().is_none(),
+            ),
             action(
                 "freeze",
                 "Freeze frame".into(),
@@ -10330,6 +11018,39 @@ impl Studio {
             ),
             rule(),
         ];
+        // The picture sized to the frame, whole or covering it: beside the
+        // inspector's two buttons, where a vertical cut is assembled clip
+        // by clip.
+        if clip.kind.is_visual() {
+            let frameable = !locked
+                && self
+                    .project()
+                    .media_by_id(&clip.media_id)
+                    .and_then(|media| {
+                        clip.framing_scale(
+                            model::Framing::Fit,
+                            (media.width, media.height),
+                            self.output_size(),
+                            0.0,
+                        )
+                    })
+                    .is_some();
+            rows.push(action(
+                "fit",
+                t("studio.fitToFrame"),
+                Glyph::Fit,
+                "",
+                frameable,
+            ));
+            rows.push(action(
+                "fill",
+                t("studio.fillFrame"),
+                Glyph::Maximize,
+                "",
+                frameable,
+            ));
+            rows.push(rule());
+        }
         // One slot, two verbs: the sound is either on its picture or off it.
         // Shown on every video clip, so the verb is where a person looks for
         // it, and greyed rather than gone when the file has no sound.
@@ -10383,7 +11104,7 @@ impl Studio {
         rows.push(check(
             "mute",
             &t("studio.mute"),
-            "M",
+            &keymap::label(&self.prefs, "mute"),
             clip.volume <= 0.0,
             !locked && audible,
         ));
@@ -11006,9 +11727,14 @@ impl Studio {
     pub fn shortcut(&mut self, action: &str) {
         log::info!("shortcut: {action}");
         match action {
-            // Ctrl+B: the selection, and every lane when nothing is picked -
-            // the same cut the tray button makes.
+            // The selected clips when there are any, as the tray's button
+            // and the menu split: the chord cut every track under the
+            // playhead whatever was selected, titles and music with it.
             "split" => {
+                let at = self.playhead;
+                self.split_at(at);
+            }
+            "split-selected" => {
                 let at = self.playhead;
                 self.split_at(at);
             }
@@ -11020,10 +11746,10 @@ impl Studio {
                     TimelineTool::Split
                 };
             }
-            // Q / E: the selected clip's edge jumps to the playhead, taking
-            // the clip's left or its right with it.
-            "cut-left" => self.cut_to_playhead(true),
-            "cut-right" => self.cut_to_playhead(false),
+            // Q / W, as in CapCut: the clip loses what is left, or right,
+            // of the playhead.
+            "delete-left" => self.delete_to_playhead(PlayheadSide::Left),
+            "delete-right" => self.delete_to_playhead(PlayheadSide::Right),
             "select-all" => self.select_all(),
             // The phone's way out of the clip tools: nothing selected, the
             // way a press on an empty lane leaves it.
@@ -11149,6 +11875,31 @@ impl Studio {
                 self.split_at(at);
             }
             "freeze" => self.freeze_at_playhead(),
+            // The clip right-clicked, or the selection when it is one of
+            // it, as Delete takes it.
+            "delete-left" | "delete-right" => {
+                let ids =
+                    if self.selection.len() > 1 && self.selection.iter().any(|held| held == id) {
+                        self.selection.clone()
+                    } else {
+                        vec![id.to_owned()]
+                    };
+                let side = if action == "delete-left" {
+                    PlayheadSide::Left
+                } else {
+                    PlayheadSide::Right
+                };
+                self.delete_clips_to_playhead(&ids, side);
+            }
+            "merge" => self.merge(),
+            // On the clip that was right-clicked, which becomes the
+            // selection, as Enhance's row makes it.
+            "fit" | "fill" => {
+                self.flush_commit();
+                self.selection = vec![id.to_owned()];
+                self.transition_selected = None;
+                self.frame_selected(action == "fill");
+            }
             // The menu opens the clip's Enhance in the inspector, where its
             // switch starts it and later turns it off and on again.
             "enhance" => {
@@ -11651,6 +12402,79 @@ mod tests {
         assert!(Studio::split_victims(&timeline, 40.0, &[], open).is_empty());
     }
 
+    /// A copy of a split clip's tail, laid right after it, shows the
+    /// tail's frames at the tail's speed - not the file's opening frames,
+    /// which it showed when the whole file was laid over the halves (#335).
+    #[test]
+    fn a_copy_of_a_split_tail_shows_the_tails_frames() {
+        use concat_project::Editor;
+        use concat_project::commands::NewMedia;
+        use concat_project::model::MediaKind;
+        for speed in [1.0, 2.0] {
+            let mut editor = Editor::new();
+            let item = NewMedia {
+                path: "/a.mp4".to_owned(),
+                name: "a.mp4".to_owned(),
+                duration: Some(10.0),
+                kind: MediaKind::Video,
+                width: Some(1920),
+                height: Some(1080),
+                frame_rate: Some(30.0),
+                frame_rate_fraction: Some("30/1".to_owned()),
+                video_codec: Some("h264".to_owned()),
+                audio_codec: None,
+                has_audio: false,
+                audio_tracks: Vec::new(),
+                origin: None,
+                color_space: Default::default(),
+            };
+            let apply =
+                |editor: &mut Editor, command| editor.apply(command).expect("applies").created_id;
+            let media_id = apply(&mut editor, Command::AddMedia { item }).expect("media");
+            let track_id = editor.project().active().tracks[0].id.clone();
+            let add = |start| Command::AddClip {
+                media_id: media_id.clone(),
+                track_id: track_id.clone(),
+                start,
+                ripple: false,
+            };
+            let whole = apply(&mut editor, add(0.0)).expect("clip");
+            apply(
+                &mut editor,
+                Command::SetClipSpeed {
+                    clip_id: whole.clone(),
+                    speed,
+                },
+            );
+            apply(
+                &mut editor,
+                Command::SplitClips {
+                    clip_ids: vec![whole],
+                    time: 2.0,
+                },
+            );
+            let tail = editor.project().active().clips[1].clone();
+            let end = tail.start + tail.duration;
+
+            let placed = apply(&mut editor, add(end)).expect("copy");
+            let placed = editor
+                .project()
+                .active()
+                .clip(&placed)
+                .expect("placed")
+                .clone();
+            let commands = super::copy_commands(&tail, &placed, &track_id, end);
+            apply(&mut editor, Command::Batch { commands });
+
+            let copy = editor.project().active().clip(&placed.id).expect("copy");
+            assert_eq!(
+                (copy.start, copy.duration, copy.source_start, copy.speed),
+                (end, tail.duration, tail.source_start, speed),
+                "at speed {speed}"
+            );
+        }
+    }
+
     /// A detach that cannot happen has a reason to give, and a picture
     /// left muted by a deleted sound clip detaches again.
     #[test]
@@ -11925,6 +12749,11 @@ mod tests {
         // A size is a size for every title in the batch.
         assert_eq!(batch_value(ClipField::FontSize, 0.08, 0.05, 0.02), 0.08);
         assert_eq!(relative_property(ClipField::FontSize), None);
+        // Volume is absolute: different starting gains land on the same level.
+        assert_eq!(relative_property(ClipField::Volume), None);
+        for current in [0.0, 0.25, 1.0, 2.0] {
+            assert_eq!(batch_value(ClipField::Volume, 0.5, 1.0, current), 0.5);
+        }
     }
 
     #[test]
@@ -11960,5 +12789,94 @@ mod tests {
         );
         assert_eq!(place_in(&after, 2.5), 0.25);
         assert_eq!(place_in(&after, 12.0), 1.0, "held to the end");
+    }
+
+    /// A batch level lands on every clip as the inspector commits it - one
+    /// batch of each clip's commands - and one undo takes all of it back:
+    /// the plain clip's level and the keyed clip's whole ride, with no key
+    /// left behind at the playhead.
+    #[test]
+    fn a_batch_level_is_one_undo_step_for_every_clip() {
+        use concat_project::model::{KeyEase, KeyProperty, MediaKind};
+        let mut editor = concat_project::Editor::new();
+        let media_id = editor
+            .apply(Command::AddMedia {
+                item: concat_project::commands::NewMedia {
+                    path: "/a.wav".to_owned(),
+                    name: "a.wav".to_owned(),
+                    duration: Some(10.0),
+                    kind: MediaKind::Audio,
+                    width: None,
+                    height: None,
+                    frame_rate: None,
+                    frame_rate_fraction: None,
+                    video_codec: None,
+                    audio_codec: Some("pcm".to_owned()),
+                    has_audio: true,
+                    audio_tracks: Vec::new(),
+                    origin: None,
+                    color_space: Default::default(),
+                },
+            })
+            .expect("adds")
+            .created_id
+            .expect("id");
+        let track_id = editor.project().active().tracks[0].id.clone();
+        let mut ids = Vec::new();
+        for start in [0.0, 20.0] {
+            let id = editor
+                .apply(Command::AddClip {
+                    media_id: media_id.clone(),
+                    track_id: track_id.clone(),
+                    start,
+                    ripple: false,
+                })
+                .expect("adds")
+                .created_id
+                .expect("id");
+            ids.push(id);
+        }
+        // The second rides: full, then faded out.
+        for (at, value) in [(0.0, 1.0), (1.0, 0.0)] {
+            editor
+                .apply(Command::SetClipKey {
+                    clip_id: ids[1].clone(),
+                    property: KeyProperty::Volume,
+                    at,
+                    value,
+                    ease: KeyEase::LINEAR,
+                })
+                .expect("keys");
+        }
+        editor.end_gesture();
+        let document = editor.project().clone();
+
+        let mut commands = Vec::new();
+        for id in &ids {
+            let before = document.active().clip(id).expect("clip");
+            let mut after = before.clone();
+            crate::batch_volume::set_level(&mut after, before, 0.5, 0.0);
+            commands.extend(super::clip_commands(id, before, &after));
+        }
+        editor.apply(Command::Batch { commands }).expect("applies");
+        let clip = |editor: &concat_project::Editor, id: &str| {
+            editor.project().active().clip(id).expect("clip").clone()
+        };
+        assert_eq!(clip(&editor, &ids[0]).volume, 0.5);
+        let keyed = clip(&editor, &ids[1]);
+        let ride: Vec<f64> = keyed
+            .keys_on(KeyProperty::Volume)
+            .map(|key| key.value)
+            .collect();
+        assert_eq!(ride, vec![0.5, 0.0], "the ride moved, no key was added");
+
+        assert!(editor.undo());
+        for id in &ids {
+            assert_eq!(
+                clip(&editor, id),
+                *document.active().clip(id).expect("clip"),
+                "one undo puts {id} back"
+            );
+        }
     }
 }

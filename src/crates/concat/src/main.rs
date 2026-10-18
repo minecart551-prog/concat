@@ -12,6 +12,11 @@ mod launch;
 use launch::Launch;
 
 fn main() -> Result<(), slint::PlatformError> {
+    // First of all, so that even `--version` says where it crashed if it
+    // does: v0.2.7-rc.4's Windows on ARM build died there with nothing
+    // but an exit code (#326). It writes to standard error until the log
+    // opens, and to both after.
+    concat_host::crash::catch();
     let launch = launch::parse(std::env::args_os().skip(1));
     // Before the log, the GPU and the window: all this proves is that the
     // executable and the libraries it links were loaded, and it should
@@ -20,6 +25,14 @@ fn main() -> Result<(), slint::PlatformError> {
     if launch == Ok(Launch::Version) {
         use std::io::Write;
         let _ = writeln!(std::io::stdout(), "concat {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    // Before the log and the window too: what this proves is that whisper's
+    // CPU kernels load on this CPU, and nothing else should be in the way.
+    if launch == Ok(Launch::WhisperCpu) {
+        use std::io::Write;
+        let cpu = concat_speech::transcribe::cpu_backend().map_err(slint::PlatformError::Other)?;
+        let _ = writeln!(std::io::stdout(), "whisper runs on {cpu}");
         return Ok(());
     }
     // A desktop's console is its standard error, which a packaged build
@@ -42,6 +55,6 @@ fn main() -> Result<(), slint::PlatformError> {
             log::error!("smoke: could not start: {error}");
         }),
         // Answered above, before the log was opened.
-        Launch::Version => Ok(()),
+        Launch::Version | Launch::WhisperCpu => Ok(()),
     }
 }

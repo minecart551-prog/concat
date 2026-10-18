@@ -255,6 +255,8 @@ impl StartPane {
         self.busy = false;
         match opened {
             Ok(()) => {
+                studio.prefs.last_project_location = Some(self.location.clone());
+                studio.prefs.save(&studio.host.dirs);
                 self.composing = false;
                 self.error.clear();
             }
@@ -359,6 +361,13 @@ impl StartPane {
             custom_fps: fps_of(num, den) as f32,
             frame_aspect: width as f32 / height.max(1) as f32,
             rate_readout: format!("{num}/{den} fps").into(),
+            rate_options: slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(
+                RATES
+                    .iter()
+                    .map(|(label, _, _)| slint::SharedString::from(format!("{label} fps")))
+                    .chain(std::iter::once(t("common.custom").into()))
+                    .collect::<Vec<_>>(),
+            ))),
             busy: self.busy,
             error: self.error.as_str().into(),
         }

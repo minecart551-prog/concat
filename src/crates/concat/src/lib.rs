@@ -31,6 +31,7 @@ mod ui {
     slint::include_modules!();
 }
 
+mod batch_volume;
 mod chips;
 mod dock;
 mod fonts;
@@ -39,6 +40,9 @@ mod gpu;
 mod grading;
 mod host;
 mod i18n;
+/// The iPhone's pickers and its way to Photos; see the module.
+#[cfg(target_os = "ios")]
+mod ios;
 mod keymap;
 mod meters;
 mod platform;
@@ -47,7 +51,11 @@ mod platform;
 /// phone shows it. See `platform::pick_files_async` and
 /// `platform::publish_export`.
 #[cfg(any(target_os = "android", target_os = "ios"))]
-pub use platform::{ExportPublisher, FilePicker, install_export_publisher, install_file_picker};
+pub use platform::{
+    ExportPublisher, FilePicker, PickKinds, install_export_publisher, install_file_picker,
+};
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub use platform::{MicrophoneAccess, install_microphone_access};
 mod panes;
 /// The pop-out window: one pane of the workspace, in a window of its own.
 mod popout;
@@ -82,7 +90,7 @@ mod wayland_drop {
     }
 }
 
-use dock::{Dock, METERS_MIN_W, SEAT_MIN_GRAB, SEAT_MIN_H, SEAT_MIN_W};
+use dock::{Dock, SEAT_MIN_GRAB, SEAT_MIN_H, SEAT_MIN_W};
 use host::{Host, Shell};
 use panes::Msg;
 use panes::captions::CaptionsMsg;
@@ -95,6 +103,7 @@ use panes::settings::SettingsMsg;
 use panes::speech::SpeechMsg;
 use panes::start::StartMsg;
 use panes::timeline::TimelineMsg;
+use panes::voiceover::VoiceoverMsg;
 use studio::{ASPECTS, Models, OUTPUTS, RATES, SIZES, Studio};
 use ui::*;
 
@@ -106,6 +115,7 @@ use ui::*;
 /// warnings, a panic, the lines below - is written down in
 /// `<app data>/logs/` as well as said out loud. See `concat_host::logs`.
 pub fn open_logging(extra: Option<Box<dyn log::Log>>) {
+    concat_host::crash::catch();
     concat_host::logs::catch_panics();
     let opened = match concat_host::AppDirs::locate() {
         Ok(dirs) => concat_host::logs::open(&dirs, extra).map(|_| ()),
@@ -158,6 +168,27 @@ pub fn run_with_project(project: Option<std::path::PathBuf>) -> Result<(), slint
 /// preferences are read, and a log file written, as on any launch.
 pub fn smoke() -> Result<(), slint::PlatformError> {
     start(None, true)
+}
+
+/// Runs one way out of the open project, in the order that keeps the work
+/// safe: `close` writes the project and lets its session go, and `leave` -
+/// hiding the window, quitting the loop, starting a replacement build - runs
+/// only when that write landed.
+///
+/// Every path out goes through this: the title bar's X, the system's close
+/// request, File › Close Window and a version switch. Before it existed, a
+/// save that failed still hid the window and quit, taking whatever the
+/// project held with it; a failure here leaves the session, its running jobs
+/// and the window exactly as they were, and returns the reason.
+pub(crate) fn close_window(
+    close: impl FnOnce() -> Result<(), String>,
+    leave: impl FnOnce(),
+) -> Result<(), String> {
+    let result = close();
+    if result.is_ok() {
+        leave();
+    }
+    result
 }
 
 /// Hands a window its models, its words, and every callback it can make.
@@ -215,6 +246,7 @@ fn wire(app: &App, shell: &Shell) {
         app.set_speech_samples(ModelRc::from(models.speech_samples.clone()));
         app.set_speech_sample_waves(ModelRc::from(models.speech_sample_waves.clone()));
         app.set_speech_sample_details(ModelRc::from(models.speech_sample_details.clone()));
+        app.set_voiceover_devices(ModelRc::from(models.voiceover_devices.clone()));
         app.set_app_menu_items(ModelRc::from(models.bar.clone()));
         app.set_transcribers(ModelRc::from(models.transcribers.clone()));
         app.set_voices(ModelRc::from(models.voices.clone()));
@@ -245,6 +277,102 @@ fn wire(app: &App, shell: &Shell) {
         words.on_lookup_upper(|_, key| i18n::t(&key).to_uppercase().into());
         words.set_lang(i18n::current().into());
     }
+
+    // The strip's drag region and double-click. Only the platform's window
+    // can do either; the scene graph forwards the gestures here.
+    app.on_titlebar_begin_drag({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                platform::begin_drag(app.window());
+            }
+        }
+    });
+    app.on_titlebar_toggle_maximize({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                platform::toggle_maximize(app.window());
+                app.set_window_maximized(platform::is_maximized(app.window()));
+            }
+        }
+    });
+    // The strip's own window buttons, on the platforms whose decorations
+    // were taken off. Close goes the way the File menu's Close does - the
+    // project is shut first, so an autosave in flight is not orphaned.
+    app.on_titlebar_minimize({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                platform::minimize(app.window());
+            }
+        }
+    });
+    app.on_titlebar_close(|| {
+        log::info!("close: titlebar X pressed");
+        Shell::with(|shell, app| {
+            let outcome = close_window(
+                || shell.studio.borrow_mut().close_project(),
+                || {
+                    log::info!("close: project closed, hiding window");
+                    app.window().hide().ok();
+                    slint::quit_event_loop().ok();
+                    log::info!("close: quit_event_loop called");
+                },
+            );
+            if let Err(error) = outcome {
+                // The save failed and `close_project` left the session
+                // open, so the window stays up. Its notice is published
+                // here or nobody would see it.
+                log::warn!("close: not closing, project could not be saved: {error}");
+                shell.studio.borrow_mut().offer_quit_without_saving(error);
+                shell.studio.borrow_mut().refresh_art();
+                shell.studio.borrow().publish(&app, &shell.models);
+            }
+        });
+    });
+    // System-driven close (Alt+F4, taskbar close): the same road out, and
+    // refused the same way when the project cannot be saved.
+    app.window().on_close_requested(|| {
+        log::info!("close: system close request (Alt+F4 / taskbar)");
+        let saved = std::cell::Cell::new(true);
+        Shell::with(|shell, app| {
+            let outcome = close_window(
+                || shell.studio.borrow_mut().close_project(),
+                || {
+                    slint::quit_event_loop().ok();
+                },
+            );
+            if let Err(error) = outcome {
+                saved.set(false);
+                log::warn!("close: not closing, project could not be saved: {error}");
+                shell.studio.borrow_mut().offer_quit_without_saving(error);
+                shell.studio.borrow_mut().refresh_art();
+                shell.studio.borrow().publish(&app, &shell.models);
+            }
+        });
+        if saved.get() {
+            slint::CloseRequestResponse::HideWindow
+        } else {
+            slint::CloseRequestResponse::KeepWindowShown
+        }
+    });
+    // Maximised or not is read back on every resize rather than tracked:
+    // the platform can maximise the window without us - a drag to the top
+    // edge, Win+Up - and the size changing is the one signal every such
+    // route has in common.
+    app.on_window_resized({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                let maximized = platform::is_maximized(app.window());
+                if app.get_window_maximized() != maximized {
+                    app.set_window_maximized(maximized);
+                }
+            }
+        }
+    });
+    app.set_own_window_buttons(platform::OWN_WINDOW_BUTTONS);
 
     // Mutate, then republish. Every handler is one of these three: the whole
     // window, the lanes alone (for the handlers a pointer drives directly,
@@ -415,31 +543,16 @@ fn wire(app: &App, shell: &Shell) {
         let Some(path) = state.dock.split_path(held) else {
             return;
         };
-        // A side that is only the meters may be as narrow as its bars;
-        // every other seat keeps the width its controls need.
-        let narrow = |node: &Dock| matches!(node, Dock::Leaf(PaneKind::Meters));
-        let (first_narrow, second_narrow) = match state.dock.at(&path) {
-            Dock::Split { first, second, .. } => (narrow(first), narrow(second)),
-            Dock::Leaf(_) => (false, false),
-        };
         let Dock::Split { columns, ratio, .. } = state.dock.at_mut(&path) else {
             return;
         };
         let wanted = if *columns { SEAT_MIN_W } else { SEAT_MIN_H };
-        let side = |is_narrow: bool| {
-            if is_narrow && *columns {
-                METERS_MIN_W
-            } else if wanted * 2.0 <= extent {
-                wanted
-            } else {
-                SEAT_MIN_GRAB.min(extent / 2.0)
-            }
-        };
-        let (low, high) = (
-            side(first_narrow) / extent,
-            1.0 - side(second_narrow) / extent,
-        );
-        *ratio = (from + delta / extent).clamp(low, high.max(low));
+        let floor = if wanted * 2.0 <= extent {
+            wanted
+        } else {
+            SEAT_MIN_GRAB.min(extent / 2.0)
+        } / extent;
+        *ratio = (from + delta / extent).clamp(floor, 1.0 - floor);
     }));
 
     // ── the bin ──
@@ -632,6 +745,9 @@ fn wire(app: &App, shell: &Shell) {
     editor.on_trim_follow_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Timeline(TimelineMsg::TrimFollowChanged(on)));
     }));
+    editor.on_meters_shown_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Timeline(TimelineMsg::MetersShownChanged(on)));
+    }));
     editor.on_preview_axis_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Timeline(TimelineMsg::PreviewAxisChanged(on)));
     }));
@@ -676,7 +792,13 @@ fn wire(app: &App, shell: &Shell) {
         state.move_keys_at(from, to);
     }));
     editor.on_scrubbed(on_lanes!(|state, seconds: f32| {
-        state.seek(seconds.max(0.0));
+        state.scrub(seconds);
+    }));
+    editor.on_finger_held(on_lanes!(|state| {
+        state.finger_held();
+    }));
+    editor.on_finger_lifted(on_lanes!(|state| {
+        state.finger_lifted();
     }));
     editor.on_scrolled(on_lanes!(|state, seconds: f32| {
         state.handle(Msg::Timeline(TimelineMsg::Scrolled(seconds)));
@@ -812,6 +934,29 @@ fn wire(app: &App, shell: &Shell) {
             state.clear_adjust_keys(key.as_str());
         }));
     }
+    // The background behind the main picture, and Fit and Fill: a global
+    // of their own, for the Details panel, the Video panel and the phone.
+    {
+        let backdrop = app.global::<Backdrop>();
+        backdrop.on_set_mode(on_lanes!(|state, clip: bool, mode: i32| {
+            state.backdrop_set_mode(clip, mode);
+        }));
+        backdrop.on_set_amount(on_lanes!(|state, clip: bool, amount: f32| {
+            state.backdrop_set_amount(clip, amount);
+        }));
+        backdrop.on_set_colour(on_lanes!(|state, clip: bool, colour: slint::Color| {
+            state.backdrop_set_colour(clip, colour);
+        }));
+        backdrop.on_set_still(on_lanes!(|state, clip: bool, row: i32| {
+            state.backdrop_set_still(clip, row);
+        }));
+        backdrop.on_apply_to_all(on_lanes!(|state| {
+            state.backdrop_apply_to_all();
+        }));
+        backdrop.on_frame(on_lanes!(|state, fill: bool| {
+            state.frame_selected(fill);
+        }));
+    }
     // The Keyframes panel's verbs; its rows go out with every publish.
     {
         let editor = app.global::<KeyEditor>();
@@ -940,10 +1085,12 @@ fn wire(app: &App, shell: &Shell) {
 
     // ── the monitor ──
     editor.on_seek(on_lanes!(|state, seconds: f32| {
+        state.stop_glide();
         state.pause();
         state.seek(seconds);
     }));
     editor.on_step_frames(on_lanes!(|state, frames: f32| {
+        state.stop_glide();
         state.pause();
         let fps = state.frame_rate().round().max(1.0);
         let at = (state.playhead * fps).round() + frames;
@@ -1018,6 +1165,18 @@ fn wire(app: &App, shell: &Shell) {
     editor.on_clip_enhance_set(on_window!(|state, on: bool| {
         state.clip_enhance_set(on);
     }));
+    editor.on_clip_enhance_size(on_window!(|state, index: i32| {
+        state.clip_enhance_size(index);
+    }));
+    editor.on_clip_enhance_strength(on_window!(|state, strength: f32| {
+        state.clip_enhance_strength(strength);
+    }));
+    editor.on_clip_enhance_preview(on_window!(|state| {
+        state.clip_enhance_preview();
+    }));
+    editor.on_clip_enhance_run(on_window!(|state| {
+        state.clip_enhance_run();
+    }));
     editor.on_transition_remove(on_window!(|state| {
         state.remove_transition();
     }));
@@ -1059,13 +1218,13 @@ fn wire(app: &App, shell: &Shell) {
         if let Some(id) = target {
             // The captions sheet is a pane of its own, so its row goes
             // through the window's messages rather than the clip's verbs:
-            // the clip is selected, and the sheet takes the selection as
-            // the clip to transcribe.
+            // the sheet opens on this clip's voice, "Use voice from
+            // timeline" on, and the clip is selected so it shows which.
             if action.as_str() == "captions" {
                 state.flush_commit();
                 state.transition_selected = None;
-                state.selection = vec![id];
-                state.handle(Msg::Captions(CaptionsMsg::Open));
+                state.selection = vec![id.clone()];
+                state.handle(Msg::Captions(CaptionsMsg::OpenOnClip(id)));
                 return;
             }
             state.clip_action(&id, action.as_str());
@@ -1340,6 +1499,30 @@ fn wire(app: &App, shell: &Shell) {
             });
         }
     });
+    // The interface scale is the one appearance choice a property cannot
+    // express: it is the window's scale factor. The window that is up is
+    // rescaled in place to the display's own scale times the choice - the
+    // same physical extent laid out again in logical pixels, so the
+    // interface grows within the window rather than being clipped by it.
+    // Nothing is rebuilt; the window keeps its size on screen. The row
+    // reads its value off the Theme global, so that is set here too.
+    // https://github.com/jub0t/Concat/issues/320
+    app.on_settings_scale_changed({
+        move |index| {
+            log::info!("settings: ui scale {index}");
+            Shell::with(|shell, app| {
+                let percent = prefs::Preferences::scale_at(usize::try_from(index).unwrap_or(0));
+                {
+                    let mut studio = shell.studio.borrow_mut();
+                    studio.prefs.ui_scale = percent;
+                    studio.prefs.save(&studio.host.dirs);
+                }
+                app.global::<Theme>().set_ui_scale(index);
+                platform::set_ui_scale(percent);
+                platform::apply_ui_scale(app.window());
+            });
+        }
+    });
     app.on_export_closed(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Close));
     }));
@@ -1349,14 +1532,8 @@ fn wire(app: &App, shell: &Shell) {
     app.on_export_name_edited(on_window!(|state, name: SharedString| {
         state.handle(Msg::Export(ExportMsg::NameEdited(name.to_string())));
     }));
-    app.on_export_resolution_changed(on_window!(|state, index: i32| {
-        state.handle(Msg::Export(ExportMsg::ResolutionChanged(index)));
-    }));
     app.on_export_rate_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Export(ExportMsg::RateChanged(index)));
-    }));
-    app.on_export_quality_changed(on_window!(|state, index: i32| {
-        state.handle(Msg::Export(ExportMsg::QualityChanged(index)));
     }));
     app.on_export_codec_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Export(ExportMsg::CodecChanged(index)));
@@ -1367,17 +1544,8 @@ fn wire(app: &App, shell: &Shell) {
     app.on_export_ten_bit_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Export(ExportMsg::TenBitChanged(on)));
     }));
-    app.on_export_color_range_changed(on_window!(|state, index: i32| {
-        state.handle(Msg::Export(ExportMsg::ColorRangeChanged(index)));
-    }));
-    app.on_export_advanced_toggled(on_window!(|state, on: bool| {
-        state.handle(Msg::Export(ExportMsg::AdvancedToggled(on)));
-    }));
-    app.on_export_rate_mode_changed(on_window!(|state, index: i32| {
-        state.handle(Msg::Export(ExportMsg::RateModeChanged(index)));
-    }));
-    app.on_export_bitrate_changed(on_window!(|state, text: SharedString| {
-        state.handle(Msg::Export(ExportMsg::BitrateChanged(text.to_string())));
+    app.on_export_bitrate_changed(on_window!(|state, mbps: f32| {
+        state.handle(Msg::Export(ExportMsg::BitrateChanged(mbps)));
     }));
     app.on_export_again(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Again));
@@ -1421,6 +1589,12 @@ fn wire(app: &App, shell: &Shell) {
     }));
     app.on_settings_playhead_stops_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Settings(SettingsMsg::PlayheadStopsChanged(on)));
+    }));
+    app.on_settings_proxies_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Settings(SettingsMsg::ProxiesChanged(on)));
+    }));
+    app.on_settings_gpu_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Settings(SettingsMsg::GpuChanged(on)));
     }));
     app.on_settings_magnetic_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Settings(SettingsMsg::MagneticChanged(on)));
@@ -1482,9 +1656,43 @@ fn wire(app: &App, shell: &Shell) {
         state.handle(Msg::Captions(CaptionsMsg::Open));
     }));
     editor.on_record_voiceover(on_window!(|state| {
-        state.handle(Msg::Voiceover(
-            crate::panes::voiceover::VoiceoverMsg::Toggle,
-        ));
+        state.handle(Msg::Voiceover(VoiceoverMsg::Toggle));
+    }));
+    app.on_voiceover_closed(on_window!(|state| {
+        state.handle(Msg::Voiceover(VoiceoverMsg::Close));
+    }));
+    app.on_voiceover_action(on_window!(|state, verb: SharedString| {
+        let msg = match verb.as_str() {
+            "record" => VoiceoverMsg::Record,
+            "pause" => VoiceoverMsg::Pause,
+            "resume" => VoiceoverMsg::Resume,
+            "stop" => VoiceoverMsg::Stop,
+            "retake" => VoiceoverMsg::Retake,
+            "retry" => VoiceoverMsg::Retry,
+            other => {
+                log::warn!("voiceover: no such action {other:?}");
+                return;
+            }
+        };
+        state.handle(Msg::Voiceover(msg));
+    }));
+    app.on_voiceover_device_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Voiceover(VoiceoverMsg::Device(index)));
+    }));
+    app.on_voiceover_countdown_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Voiceover(VoiceoverMsg::Countdown(on)));
+    }));
+    app.on_voiceover_mute_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Voiceover(VoiceoverMsg::Mute(on)));
+    }));
+    app.on_voiceover_gain_changed(on_window!(|state, db: f32| {
+        state.handle(Msg::Voiceover(VoiceoverMsg::Gain(db)));
+    }));
+    app.on_voiceover_prompt_edited(on_window!(|state, text: SharedString| {
+        state.handle(Msg::Voiceover(VoiceoverMsg::Prompt(text.to_string())));
+    }));
+    app.on_voiceover_prompt_speed_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Voiceover(VoiceoverMsg::PromptSpeed(index)));
     }));
     editor.on_speak(on_window!(|state| {
         state.handle(Msg::Speech(SpeechMsg::Open));
@@ -1492,6 +1700,12 @@ fn wire(app: &App, shell: &Shell) {
 
     app.on_captions_closed(on_window!(|state| {
         state.handle(Msg::Captions(CaptionsMsg::Close));
+    }));
+    app.on_captions_voice_toggled(on_window!(|state, on: bool| {
+        state.handle(Msg::Captions(CaptionsMsg::VoiceToggled(on)));
+    }));
+    app.on_captions_source_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::SourceChanged(index)));
     }));
     app.on_captions_text_edited(on_window!(|state, text: SharedString| {
         state.handle(Msg::Captions(CaptionsMsg::TextEdited(text.to_string())));
@@ -1510,6 +1724,12 @@ fn wire(app: &App, shell: &Shell) {
     }));
     app.on_captions_cancel(on_window!(|state| {
         state.handle(Msg::Captions(CaptionsMsg::Cancel));
+    }));
+    app.on_captions_import_srt(on_window!(|state| {
+        state.handle(Msg::Captions(CaptionsMsg::ImportSrt));
+    }));
+    app.on_captions_export_srt(on_window!(|state| {
+        state.handle(Msg::Captions(CaptionsMsg::ExportSrt));
     }));
     app.on_speech_closed(on_window!(|state| {
         state.handle(Msg::Speech(SpeechMsg::Close));
@@ -1588,7 +1808,12 @@ fn wire(app: &App, shell: &Shell) {
                         "speech" => state.handle(Msg::Speech(SpeechMsg::Open)),
                         "clear-cache" => state.clear_project_cache(),
                         "settings" => state.handle(Msg::Settings(SettingsMsg::Open)),
-                        "close-project" => state.close_project(),
+                        "close-project" => {
+                            // Back to the launch screen, not out of the
+                            // app: a failed save keeps the project open and
+                            // the notice below lands it on screen.
+                            let _ = state.close_project();
+                        }
                         "undo" => state.undo(),
                         "redo" => state.redo(),
                         "snap" => state.handle(Msg::Timeline(TimelineMsg::SnapToggled)),
@@ -1616,6 +1841,8 @@ fn wire(app: &App, shell: &Shell) {
                             state.seek(end);
                         }
                         "delete" => state.delete_selected(),
+                        // The selected clips, as the tray's button splits, or
+                        // everything under the playhead when none is.
                         "split" => {
                             let at = state.playhead;
                             state.split_at(at);
@@ -1626,9 +1853,22 @@ fn wire(app: &App, shell: &Shell) {
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
-                    shell.studio.borrow_mut().close_project();
-                    app.window().hide().ok();
-                    slint::quit_event_loop().ok();
+                    let outcome = close_window(
+                        || shell.studio.borrow_mut().close_project(),
+                        || {
+                            app.window().hide().ok();
+                            slint::quit_event_loop().ok();
+                        },
+                    );
+                    if let Err(error) = outcome {
+                        // Unsaved work is worth more than the window: the
+                        // project stays open and the reason is shown.
+                        log::warn!("close: not closing, project could not be saved: {error}");
+                        shell.studio.borrow_mut().offer_quit_without_saving(error);
+                        shell.studio.borrow_mut().refresh_art();
+                        shell.studio.borrow().publish(&app, &shell.models);
+                        return;
+                    }
                     log::info!("close: quit_event_loop called (menu)");
                     return;
                 }
@@ -1790,6 +2030,24 @@ fn wire(app: &App, shell: &Shell) {
 
 /// [`run_with_project`], or [`smoke`] when `smoke` is set.
 fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::PlatformError> {
+    // What Import and a finished export reach on an iPhone. Android's own
+    // crate installs its; iOS runs this crate's binary, so it is here.
+    // https://github.com/jub0t/Concat/issues/332
+    #[cfg(target_os = "ios")]
+    ios::install();
+
+    // The interface scale: a percent of the display's own, applied once
+    // the window is up and kept through moves between monitors; see
+    // `platform::apply_ui_scale`. https://github.com/jub0t/Concat/issues/320
+    if let Ok(dirs) = concat_host::AppDirs::locate() {
+        let percent = prefs::Preferences::load(&dirs)
+            .ui_scale
+            .filter(|percent| prefs::UI_SCALES.contains(percent));
+        platform::set_ui_scale(percent);
+    }
+
+    let (startup_mark, safe) = safe_start();
+
     // The shell doesn't exist yet - it needs the window the backend is about
     // to help create - but `Shell::with` is a no-op until `Shell::install`
     // runs, and by the time an OS drop can actually happen, it has. Import
@@ -1837,6 +2095,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // first thing the window says.
     let mut studio = Studio::new(host);
     studio.set_phone(phone);
+    if safe {
+        studio.notify(&i18n::t("start.safeMode"), false);
+    }
     studio.reload_packages(false);
     studio.watch_packages();
     let dark = studio.prefs.dark.unwrap_or(true);
@@ -1874,6 +2135,13 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         theme.set_playhead_custom(colour);
         theme.set_playhead_is_custom(true);
     }
+
+    // The interface scale: the row on Settings > Appearance reads the index
+    // off the Theme global, and the window was already made at the scale the
+    // environment asked for above, so this only lines the two up.
+    // https://github.com/jub0t/Concat/issues/320
+    app.global::<Theme>()
+        .set_ui_scale(studio.prefs.scale_index() as i32);
 
     let shell = Rc::new(Shell {
         app: app.as_weak(),
@@ -1955,72 +2223,6 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             .collect::<Vec<_>>(),
     ))));
 
-    // The strip's drag region and double-click. Only the platform's window
-    // can do either; the scene graph forwards the gestures here.
-    app.on_titlebar_begin_drag({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                platform::begin_drag(app.window());
-            }
-        }
-    });
-    app.on_titlebar_toggle_maximize({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                platform::toggle_maximize(app.window());
-                app.set_window_maximized(platform::is_maximized(app.window()));
-            }
-        }
-    });
-    // The strip's own window buttons, on the platforms whose decorations
-    // were taken off. Close goes the way the File menu's Close does - the
-    // project is shut first, so an autosave in flight is not orphaned.
-    app.on_titlebar_minimize({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                platform::minimize(app.window());
-            }
-        }
-    });
-    app.on_titlebar_close(|| {
-        log::info!("close: titlebar X pressed");
-        Shell::with(|shell, app| {
-            shell.studio.borrow_mut().close_project();
-            log::info!("close: project closed, hiding window");
-            app.window().hide().ok();
-            slint::quit_event_loop().ok();
-            log::info!("close: quit_event_loop called");
-        });
-    });
-    // System-driven close (Alt+F4, taskbar close): the same road out.
-    app.window().on_close_requested(|| {
-        log::info!("close: system close request (Alt+F4 / taskbar)");
-        Shell::with(|shell, _app| {
-            shell.studio.borrow_mut().close_project();
-        });
-        slint::quit_event_loop().ok();
-        slint::CloseRequestResponse::HideWindow
-    });
-    // Maximised or not is read back on every resize rather than tracked:
-    // the platform can maximise the window without us - a drag to the top
-    // edge, Win+Up - and the size changing is the one signal every such
-    // route has in common.
-    app.on_window_resized({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                let maximized = platform::is_maximized(app.window());
-                if app.get_window_maximized() != maximized {
-                    app.set_window_maximized(maximized);
-                }
-            }
-        }
-    });
-    app.set_own_window_buttons(platform::OWN_WINDOW_BUTTONS);
-
     // Bound the same way for every window: the main one here, and a pop-out
     // as it opens. See `wire`.
     wire(&app, &shell);
@@ -2055,9 +2257,25 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // loop's end takes below, for the same reason - the engine's threads
     // are not waited on.
     if smoke {
+        // whisper's CPU kernels, which the x86_64 Windows and Linux bundles
+        // carry as modules beside the program, one per CPU generation, for
+        // ggml to choose from (#388). A bundle without them starts and
+        // fails at its first transcription, so the smoke run loads them.
+        // Not elsewhere: there they are linked in, and asking ggml for its
+        // devices would only bring Metal up on a Mac runner for nothing.
+        #[cfg(all(
+            target_arch = "x86_64",
+            any(target_os = "windows", target_os = "linux")
+        ))]
+        match concat_speech::transcribe::cpu_backend() {
+            Ok(cpu) => log::info!("smoke: whisper runs on {cpu}"),
+            Err(error) => {
+                log::error!("smoke: {error}");
+                leave(1);
+            }
+        }
         log::info!("smoke: ok");
-        log::logger().flush();
-        std::process::exit(0);
+        leave(0);
     }
 
     // Decoders nobody has asked a frame of for ten seconds are closed,
@@ -2078,8 +2296,301 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         },
     );
 
+    // A launch that has run this long was not killed by its start; the
+    // mark goes, so the next one is not started safe for nothing.
+    let started = startup_mark.as_ref().map(|mark| mark.path().to_owned());
+    slint::Timer::single_shot(SAFE_AFTER, move || {
+        if let Some(path) = started {
+            let _ = std::fs::remove_file(path);
+        }
+    });
+
+    // The chosen interface scale, as soon as the window is up.
+    slint::Timer::single_shot(std::time::Duration::ZERO, || {
+        Shell::with(|_, app| platform::apply_ui_scale(app.window()));
+    });
+
     let result = app.run();
     drop(reader_sweep);
     log::info!("close: event loop exited (ok={})", result.is_ok());
-    std::process::exit(0);
+    // The loop failing is the window never having run at all - on a phone
+    // whose Vulkan driver wgpu will not take, it is the whole launch, and
+    // the person sees the app vanish. Its reason goes in the log before
+    // anything else can end the process, and the exit says it failed.
+    if let Err(error) = &result {
+        log::error!("close: the window could not run: {error}");
+        // The mark stays: the next launch starts safe.
+        std::mem::forget(startup_mark);
+        leave(1);
+    }
+    drop(startup_mark);
+    leave(0);
+}
+
+/// How long a launch runs before it counts as having started.
+const SAFE_AFTER: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Safe start: whether this launch draws on the software rasteriser
+/// because the last one died while starting, and the mark that says this
+/// one is starting.
+///
+/// Every recent release met a Windows driver that closed the app in its
+/// first seconds - a new one each time (#339, #378, #389, #242) - and a
+/// launch check on a CI machine meets none of them. A launch that dies
+/// before [`SAFE_AFTER`] leaves its mark; the next one finds it, draws on
+/// WARP or lavapipe instead of the GPU, and keeps doing so - a driver that
+/// killed one launch kills the next, and starting on the GPU every other
+/// time would crash every other time. Slower, and it opens. Settings >
+/// General's GPU switch goes back. Only on Windows and Linux, which have a
+/// software rasteriser to draw on; a Mac has none, and a phone's backend
+/// picks its own way to draw.
+fn safe_start() -> (Option<concat_host::jobs::Tripwire>, bool) {
+    if !cfg!(any(windows, target_os = "linux")) {
+        return (None, false);
+    }
+    let Ok(dirs) = concat_host::AppDirs::locate() else {
+        return (None, false);
+    };
+    let mark = dirs.data.join("startup");
+    let mut preferences = prefs::Preferences::load(&dirs);
+    let safe = concat_host::jobs::Tripwire::tripped(&mark) && !preferences.software_gpu;
+    if safe {
+        log::warn!("start: the last launch closed while starting; drawing in software from now on");
+        preferences.software_gpu = true;
+        preferences.save(&dirs);
+    }
+    if preferences.software_gpu && std::env::var_os("CONCAT_GPU").is_none() {
+        // SAFETY: the process is single-threaded here, as for the scale
+        // above: nothing reads the environment concurrently.
+        unsafe { std::env::set_var("CONCAT_GPU", "software") };
+    }
+    (Some(concat_host::jobs::Tripwire::arm(&mark)), safe)
+}
+
+/// Ends the process with `code`, the log flushed first, and the threads
+/// still running - the GPU's, the engine's, the audio output's - not
+/// waited on.
+///
+/// On Linux it is `_exit`, not `exit`: `exit` runs the C libraries' exit
+/// handlers under those threads, and they are not written for it - most
+/// likely Mesa's llvmpipe, tearing its LLVM down while its rasteriser
+/// threads are still drawing. On an arm64 machine with no GPU,
+/// v0.2.7-rc.2's `concat --smoke` logged "smoke: ok" and then died of a
+/// segmentation fault on its way out; a person closing the window there
+/// would have had the same crash. Nothing those handlers do is anything
+/// a closing app needs: the log is flushed here, and the files a project
+/// writes are written before the window closes.
+fn leave(code: i32) -> ! {
+    log::logger().flush();
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        // SAFETY: `_exit` ends the process there and then; nothing of
+        // this one's is touched after it.
+        unsafe { libc::_exit(code) }
+    }
+    #[cfg(not(target_os = "linux"))]
+    std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::close_window;
+    use std::cell::{Cell, RefCell};
+    use std::path::Path;
+
+    use concat_host::{Session, projects};
+
+    /// A scratch folder that removes itself when the test ends, pass, fail or
+    /// panic. Its name carries the process id and the thread's so two tests
+    /// running at once never share one, and it sits under `temp_dir`, which
+    /// the isolated run points into the approved directory.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "concat-close-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("a scratch folder");
+            Self(path)
+        }
+
+        fn location(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            // Best effort: a leftover scratch must not fail a run that its
+            // test already decided.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Saves the session the slot holds and, only when the write lands, lets
+    /// it go - the contract `Studio::close_project` keeps for every way out.
+    /// The write is `concat_host`'s own, so nothing here fabricates a
+    /// failure or a success.
+    fn save_then_release(slot: &RefCell<Option<Session>>) -> Result<(), String> {
+        let mut slot = slot.borrow_mut();
+        let result = match slot.as_mut() {
+            Some(session) => session.save(None),
+            None => Ok(()),
+        };
+        if result.is_ok() {
+            *slot = None;
+        }
+        result
+    }
+
+    fn tracks(session: &Session) -> usize {
+        session.project().active().tracks.len()
+    }
+
+    /// The regression this gate exists for, over a real project on disk: a
+    /// close used to hide the window and quit whatever the save did. The
+    /// write here is `concat_host`'s own - a real [`Session`] through
+    /// `projects::save` - and it is made to fail by a directory standing
+    /// where the manifest must go, a block at the destination the save
+    /// renames onto, so the failure holds whatever the save calls its
+    /// temporary file (the old `.saving` or the current per-call name). A
+    /// failed write must leave the session open, keep the edit it holds and
+    /// never leave; the retry, unblocked, must land the edit and then leave.
+    ///
+    /// The gate is what is under test, not a Slint handler: there is no
+    /// window, no event loop and no `Studio` here, only the real session and
+    /// the real filesystem.
+    #[test]
+    fn a_failed_save_keeps_the_real_session_and_its_edit() {
+        let scratch = Scratch::new("session");
+        let info = projects::create(&scratch.location(), "Closing", 1920, 1080, 30, 1)
+            .expect("creates the project");
+        let manifest = projects::manifest_path(Path::new(&info.path));
+
+        // A real session, saved once; then an edit that lives in memory
+        // only, so the disk holds the project without it.
+        let mut session = Session::open_info(&info).expect("opens the session");
+        let unedited = tracks(&session);
+        session.save(None).expect("the baseline write lands");
+        let baseline = std::fs::read(&manifest).expect("reads the baseline manifest");
+        session
+            .apply(concat_project::Command::AddTrack { bottom: false })
+            .expect("adds a track");
+        let edited = tracks(&session);
+        assert_eq!(edited, unedited + 1, "the edit really changed the project");
+
+        // Block the destination: a directory where the manifest must go. The
+        // save writes its temporary, flushes it, and cannot rename it over a
+        // directory, so it fails for real and leaves no partial manifest.
+        std::fs::remove_file(&manifest).expect("removes the manifest");
+        std::fs::create_dir(&manifest).expect("blocks the manifest path");
+
+        let slot = RefCell::new(Some(session));
+        let left = Cell::new(false);
+        let outcome = close_window(|| save_then_release(&slot), || left.set(true));
+
+        let failed_at = manifest.display().to_string();
+        assert!(outcome.is_err(), "a blocked write is a failure");
+        assert!(
+            outcome.as_ref().unwrap_err().contains(failed_at.as_str()),
+            "the failure is the real one from the blocked destination: {outcome:?}"
+        );
+        assert!(manifest.is_dir(), "the block is untouched, nothing landed");
+        {
+            let held = slot.borrow();
+            let session = held.as_ref().expect("the session is kept");
+            assert_eq!(
+                tracks(session),
+                edited,
+                "the kept session still holds the edit"
+            );
+        }
+        assert!(!left.get(), "nothing leaves on a failed save");
+
+        // Restore the baseline that the test removed to install its block.
+        // This checks recovery; it does not claim that a manifest deleted
+        // by the test itself was preserved by the failed write.
+        std::fs::remove_dir(&manifest).expect("clears the block");
+        std::fs::write(&manifest, &baseline).expect("restores the manifest");
+        let reopened = Session::open_info(&info).expect("reopens the old document");
+        assert_eq!(
+            tracks(&reopened),
+            unedited,
+            "the failed write saved nothing over the old one"
+        );
+        drop(reopened);
+
+        // The retry, unblocked: the same gate, now landing. Only a landed
+        // save lets the session go and leaves, and the edit is on disk for
+        // the next open.
+        let outcome = close_window(|| save_then_release(&slot), || left.set(true));
+        assert!(outcome.is_ok(), "the retry lands: {outcome:?}");
+        assert!(slot.borrow().is_none(), "a landed save lets the session go");
+        assert!(left.get(), "and only then leaves");
+        let reopened = Session::open_info(&info).expect("reopens the saved project");
+        assert_eq!(
+            tracks(&reopened),
+            edited,
+            "the edit is on disk after the retry"
+        );
+    }
+
+    /// Exercise the capture-before-dispatch contract with real session
+    /// snapshots: a queued autosave must not replace the newer close save,
+    /// even if its worker only starts writing after close has succeeded.
+    #[test]
+    fn a_delayed_autosave_cannot_replace_the_close_snapshot() {
+        let scratch = Scratch::new("ordered-close");
+        let info = projects::create(&scratch.location(), "Ordered", 1920, 1080, 30, 1)
+            .expect("creates the project");
+        let mut session = Session::open_info(&info).expect("opens the session");
+        let (old_path, old_document) = session.prepare_save(None);
+        let old_ticket = projects::ticket();
+        session
+            .apply(concat_project::Command::AddTrack { bottom: false })
+            .expect("adds the unsaved track");
+        let edited = tracks(&session);
+        let (new_path, new_document) = session.prepare_save(None);
+        let new_ticket = projects::ticket();
+
+        let (release, delayed) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            delayed.recv().expect("releases the delayed autosave");
+            projects::save_ordered(&old_path, &old_document, old_ticket)
+        });
+        let left = Cell::new(false);
+        let outcome = close_window(
+            || projects::save_ordered(&new_path, &new_document, new_ticket).map(|_| ()),
+            || left.set(true),
+        );
+        // Always release and join the worker before asserting, including
+        // when the close write unexpectedly fails.
+        release.send(()).expect("releases the worker");
+        let late = worker.join().expect("the worker completes");
+        assert!(outcome.is_ok(), "the close save succeeds: {outcome:?}");
+        assert!(left.get());
+        assert_eq!(late, Ok(projects::Saved::Superseded));
+        let reopened = Session::open_info(&info).expect("reopens the latest snapshot");
+        assert_eq!(tracks(&reopened), edited, "the last edit survives close");
+    }
+
+    /// The version switch schedules its relaunch inside the leave, so a
+    /// failed save starts no replacement build over the running one.
+    #[test]
+    fn a_failed_save_does_not_schedule_the_relaunch() {
+        let relaunched = Cell::new(false);
+        let outcome = close_window(
+            || Err("could not write the project".to_owned()),
+            || relaunched.set(true),
+        );
+        assert!(outcome.is_err());
+        assert!(!relaunched.get(), "nothing is relaunched on a failed save");
+    }
 }

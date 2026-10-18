@@ -115,6 +115,9 @@ pub(crate) struct BuiltTimeline {
     pub(crate) transitions: Vec<TransitionSpan>,
     /// The clips whose background a mask takes away.
     pub(crate) cutouts: HashMap<ClipId, CutoutJob>,
+    /// What fills the frame behind each picture that has a background; see
+    /// [`crate::with_backdrops`].
+    pub(crate) backdrops: HashMap<ClipId, crate::ExportBackdrop>,
 }
 
 /// A packaged transition over a cut. The incoming clip has been overlapped
@@ -212,6 +215,7 @@ pub(crate) fn build_timeline(
     let mut chains: HashMap<ClipId, Vec<AppliedFilter>> = HashMap::new();
     let mut reveal_maps: HashMap<ClipId, Arc<RevealMap>> = HashMap::new();
     let mut cutouts: HashMap<ClipId, CutoutJob> = HashMap::new();
+    let mut backdrops: HashMap<ClipId, crate::ExportBackdrop> = HashMap::new();
     let mut highlight: Option<ClipId> = None;
 
     let lanes = visible.iter().map(|clip| clip.track).max().unwrap_or(0) + 1;
@@ -223,7 +227,7 @@ pub(crate) fn build_timeline(
         // Quantise to the frame grid on the way in. The UI works in f64
         // seconds; the engine works in exact rationals, and this is the seam
         // where a value stops being approximate.
-        let start = quantise(clip.start, rate);
+        let start = quantise_at(clip.start, rate, request.effect_time_offset);
         let duration = quantise(clip.duration, rate);
         if duration.is_zero() {
             continue;
@@ -303,6 +307,9 @@ pub(crate) fn build_timeline(
             if clip.highlighted {
                 highlight = Some(id);
             }
+            if let Some(backdrop) = &clip.backdrop {
+                backdrops.insert(id, backdrop.clone());
+            }
         }
     }
 
@@ -320,6 +327,7 @@ pub(crate) fn build_timeline(
         reveal_maps,
         cutouts,
         highlight,
+        backdrops,
     }
 }
 
@@ -445,4 +453,10 @@ pub(crate) fn fitted_size(
 
 pub(crate) fn quantise(seconds: f64, rate: FrameRate) -> Rational {
     rate.time_of_frame((seconds * rate.fps().as_f64()).round().max(0.0) as i64)
+}
+
+/// Rebase a frame-grid timestamp without rounding a raw subtraction. Audio
+/// keeps the raw local placement; video retains its original global grid.
+pub(crate) fn quantise_at(seconds: f64, rate: FrameRate, origin: f64) -> Rational {
+    quantise(seconds + origin, rate) - quantise(origin, rate)
 }

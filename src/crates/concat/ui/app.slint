@@ -28,6 +28,7 @@ import { RelinkDialog, RelinkData, MissingMediaItem } from "dialogs/relink.slint
 import { ConfirmData, ConfirmDialog } from "dialogs/confirm.slint";
 import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
+import { VoiceoverData, VoiceoverPanel } from "dialogs/voiceover.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor } from "editor.slint";
 import { PaneKind, Panes } from "workspace/pane-switcher.slint";
@@ -41,11 +42,11 @@ import { ParamFormat } from "inspector/controls.slint";
 import { ToastData, ToastLayer } from "primitives/toast.slint";
 import { TooltipLayer } from "primitives/tooltip.slint";
 import { FontSearch } from "inspector/font-picker.slint";
-import { Meters } from "workspace/meters-pane.slint";
+import { Meters } from "timeline/vu-meter.slint";
 import { Seat } from "workspace/seat.slint";
 import { Workspace } from "workspace/workspace.slint";
 import {
-    ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
+    Backdrop, BackdropData, ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
     SelectedClipData, SelectedTransitionData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize,
 } from "timeline/model.slint";
@@ -58,12 +59,12 @@ export {
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData, ParamFormat,
     DockDivider, DockSide, PaneKind, SeatBox,
     EffectData, FontSearch, Meters, MediaFilter, MediaItemData, MediaKind, SourcePreview, TextPresetData,
-    ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
+    Backdrop, BackdropData, ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
     KeyEditor, KeyMarkData, KeyRowData,
     SelectedClipData, SelectedTransitionData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     ChipOption, RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
-    CaptionsSheetData, SpeechSheetData,
+    CaptionsSheetData, SpeechSheetData, VoiceoverData,
 }
 
 export component App inherits Window {
@@ -188,6 +189,14 @@ export component App inherits Window {
     /// main window carry on.
     callback popout-close();
 
+    /// A sheet with pages of its own is the whole window, inside its safe
+    /// area, on a phone and in any window too narrow for it to float as a
+    /// card with room around it.
+    property <bool> sheets-fill: root.phone || root.width < 600px;
+    /// Which floating tool card is in front: "captions" or "speech". The
+    /// one opened or grabbed last; Escape closes it first.
+    property <string> front-tool: "captions";
+
     /// The File / Edit / View menus. Built in Rust like every other menu here,
     /// because what belongs on them depends on the project.
     in property <int> open-menu: -1;
@@ -238,16 +247,11 @@ export component App inherits Window {
     callback export-closed();
     callback export-name-edited(name: string);
     callback export-browse();
-    callback export-resolution-changed(index: int);
     callback export-rate-changed(index: int);
-    callback export-quality-changed(index: int);
     callback export-codec-changed(index: int);
     callback export-ten-bit-changed(on: bool);
     callback export-hdr-changed(on: bool);
-    callback export-color-range-changed(index: int);
-    callback export-advanced-toggled(on: bool);
-    callback export-rate-mode-changed(index: int);
-    callback export-bitrate-changed(text: string);
+    callback export-bitrate-changed(mbps: float);
     callback export-start();
     callback export-cancel();
     callback export-reveal();
@@ -263,7 +267,10 @@ export component App inherits Window {
     callback settings-accent-custom-changed(colour: color);
     callback settings-playhead-changed(colour: color);
     callback settings-playhead-reset();
+    callback settings-scale-changed(index: int);
     callback settings-playhead-stops-changed(on: bool);
+    callback settings-proxies-changed(on: bool);
+    callback settings-gpu-changed(on: bool);
     callback settings-magnetic-changed(on: bool);
     callback settings-download-source-changed(index: int);
     callback settings-download-base-edited(text: string);
@@ -307,12 +314,16 @@ export component App inherits Window {
     in property <CaptionsSheetData> captions;
     in property <[string]> caption-models;
     callback captions-closed();
+    callback captions-voice-toggled(on: bool);
+    callback captions-source-changed(index: int);
     callback captions-text-edited(text: string);
     callback captions-model-changed(index: int);
     callback captions-placement-changed(index: int);
     callback captions-size-changed(index: int);
     callback captions-begin();
     callback captions-cancel();
+    callback captions-import-srt();
+    callback captions-export-srt();
 
     in property <SpeechSheetData> speech;
     in property <[string]> speech-models;
@@ -338,6 +349,19 @@ export component App inherits Window {
     pure callback speech-insert-tag(text: string, tag: string, at: int) -> string;
     callback speech-begin();
     callback speech-cancel();
+
+    /// The voiceover panel; see VoiceoverPanel. Its meter and clock come
+    /// on the Editor global, from a timer.
+    in property <VoiceoverData> voiceover;
+    in property <[string]> voiceover-devices;
+    callback voiceover-closed();
+    callback voiceover-action(verb: string);
+    callback voiceover-device-changed(index: int);
+    callback voiceover-countdown-changed(on: bool);
+    callback voiceover-mute-changed(on: bool);
+    callback voiceover-gain-changed(db: float);
+    callback voiceover-prompt-edited(text: string);
+    callback voiceover-prompt-speed-changed(index: int);
 
     /// Takes focus back from whatever field holds it. The keyboard scope is
     /// where focus rests when nothing is being typed into, so giving it the
@@ -477,6 +501,35 @@ export component App inherits Window {
         // same callback. False lets the key go on up, so Escape still
         // closes a popup and Tab still moves focus.
         key-pressed(event) => {
+            // Escape closes the sheet on top, as its × does. A sheet busy
+            // with a job keeps itself - its × is gone then too - and the
+            // key is spent on it, not passed to the editor underneath.
+            if (event.text == Key.Escape) {
+                if (root.confirm.open) { root.confirm-dismissed(); return accept; }
+                if (root.relink.open) { root.relink-dismiss(); return accept; }
+                if (root.project-sheet.open) { root.project-closed(); return accept; }
+                if (root.settings.open) { root.settings-closed(); return accept; }
+                if (root.export.open) {
+                    if (root.export.phase != ExportPhase.running) { root.export-closed(); }
+                    return accept;
+                }
+                if (root.start.composing) {
+                    if (!root.start.busy) { root.start-dismiss(); }
+                    return accept;
+                }
+                // The tool cards, under the sheets: the one in front first.
+                // A floating card closes with its job running, which goes
+                // on and is there again when it is opened; a phone's sheet
+                // busy with a job keeps itself, as its × is gone.
+                if (root.speech.open && (root.front-tool == "speech" || !root.captions.open)) {
+                    if (!root.sheets-fill || !root.speech.running) { root.speech-closed(); }
+                    return accept;
+                }
+                if (root.captions.open) {
+                    if (!root.sheets-fill || !root.captions.running) { root.captions-closed(); }
+                    return accept;
+                }
+            }
             if (Editor.key-chord(event.text, event.modifiers.shift, event.modifiers.alt,
                     event.modifiers.control, event.modifiers.meta, root.on-start)) {
                 return accept;
@@ -593,6 +646,122 @@ export component App inherits Window {
         }
     }
 
+    // The voiceover panel floats over the editor and under every sheet:
+    // it has no scrim, so the work beside it carries on, and a sheet put up
+    // while it is open - Export, Settings - covers it like the rest.
+    if !root.on-start: VoiceoverPanel {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        phone: root.phone;
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
+        data: root.voiceover;
+        devices: root.voiceover-devices;
+        level: Editor.record-level;
+        rms: Editor.record-rms;
+        clipped: Editor.record-clipped;
+        seconds: Editor.record-seconds;
+        silent: Editor.record-silent;
+
+        closed => { root.voiceover-closed(); }
+        action(verb) => { root.voiceover-action(verb); }
+        device-changed(index) => { root.voiceover-device-changed(index); }
+        countdown-changed(on) => { root.voiceover-countdown-changed(on); }
+        mute-changed(on) => { root.voiceover-mute-changed(on); }
+        gain-changed(db) => { root.voiceover-gain-changed(db); }
+        prompt-edited(text) => { root.voiceover-prompt-edited(text); }
+        prompt-speed-changed(index) => { root.voiceover-prompt-speed-changed(index); }
+    }
+
+    // Captions and Text to speech: cards floating over the editor on a
+    // desk, like the voiceover panel and under every sheet, so the
+    // timeline, the playhead and the selection stay in reach while they
+    // are open and a job runs. Whichever was opened or grabbed last is in
+    // front, and is the one Escape closes. On a phone, or a window too
+    // narrow for a card beside the work, they stay the sheets they were,
+    // over everything.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        z: root.sheets-fill ? 1 : 0;
+
+        CaptionsDialog {
+            fill: root.sheets-fill;
+            floating: !root.sheets-fill;
+            z: root.front-tool == "captions" ? 1 : 0;
+            raised => { root.front-tool = "captions"; }
+            inset-top: root.safe-area-insets.top;
+            inset-bottom: root.safe-area-insets.bottom;
+            inset-left: root.safe-area-insets.left;
+            inset-right: root.safe-area-insets.right;
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+            data: root.captions;
+            models: root.caption-models;
+
+            closed => { root.captions-closed(); }
+            voice-toggled(on) => { root.captions-voice-toggled(on); }
+            source-changed(index) => { root.captions-source-changed(index); }
+            text-edited(text) => { root.captions-text-edited(text); }
+            model-changed(index) => { root.captions-model-changed(index); }
+            placement-changed(index) => { root.captions-placement-changed(index); }
+            size-changed(index) => { root.captions-size-changed(index); }
+            begin => { root.captions-begin(); }
+            cancel => { root.captions-cancel(); }
+            import-srt => { root.captions-import-srt(); }
+            export-srt => { root.captions-export-srt(); }
+        }
+
+        SpeechDialog {
+            fill: root.sheets-fill;
+            floating: !root.sheets-fill;
+            // Its own home, a step in from the captions card's, so the two
+            // do not open exactly on top of each other.
+            home-right: 44px;
+            home-top: 76px;
+            z: root.front-tool == "speech" ? 1 : 0;
+            raised => { root.front-tool = "speech"; }
+            inset-top: root.safe-area-insets.top;
+            inset-bottom: root.safe-area-insets.bottom;
+            inset-left: root.safe-area-insets.left;
+            inset-right: root.safe-area-insets.right;
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+            data: root.speech;
+            models: root.speech-models;
+            model-details: root.speech-model-details;
+            voices: root.speech-voices;
+            voice-details: root.speech-voice-details;
+            samples: root.speech-samples;
+            sample-waves: root.speech-sample-waves;
+            sample-details: root.speech-sample-details;
+
+            closed => { root.speech-closed(); }
+            text-edited(text) => { root.speech-text-edited(text); }
+            voice-changed(index) => { root.speech-voice-changed(index); }
+            model-changed(index) => { root.speech-model-changed(index); }
+            speed-changed(value) => { root.speech-speed-changed(value); }
+            quality-changed(index) => { root.speech-quality-changed(index); }
+            pauses-changed(value) => { root.speech-pauses-changed(value); }
+            reference-start-changed(seconds) => { root.speech-reference-start-changed(seconds); }
+            use-sample-changed(on) => { root.speech-use-sample-changed(on); }
+            sample-changed(index) => { root.speech-sample-changed(index); }
+            insert-tag(text, tag, at) => { return root.speech-insert-tag(text, tag, at); }
+            begin => { root.speech-begin(); }
+            cancel => { root.speech-cancel(); }
+        }
+    }
+
     // Declared last, and that is load-bearing: Slint paints siblings in
     // declaration order, so a modal placed above the workspace in the file is
     // painted *under* it on screen — open, correct, and completely hidden.
@@ -602,6 +771,11 @@ export component App inherits Window {
     // scrim keeps the rail from being pressed — so the order between the two
     // decides nothing and this one reads first because it comes first.
     NewProjectDialog {
+        fill: root.sheets-fill;
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
         x: 0;
         y: 0;
         width: root.width;
@@ -627,6 +801,10 @@ export component App inherits Window {
     }
 
     ExportDialog {
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
         x: 0;
         y: 0;
         width: root.width;
@@ -642,16 +820,11 @@ export component App inherits Window {
         closed => { root.export-closed(); }
         name-edited(name) => { root.export-name-edited(name); }
         browse => { root.export-browse(); }
-        resolution-changed(index) => { root.export-resolution-changed(index); }
         rate-changed(index) => { root.export-rate-changed(index); }
-        quality-changed(index) => { root.export-quality-changed(index); }
         codec-changed(index) => { root.export-codec-changed(index); }
         ten-bit-changed(on) => { root.export-ten-bit-changed(on); }
         hdr-changed(on) => { root.export-hdr-changed(on); }
-        color-range-changed(index) => { root.export-color-range-changed(index); }
-        advanced-toggled(on) => { root.export-advanced-toggled(on); }
-        rate-mode-changed(index) => { root.export-rate-mode-changed(index); }
-        bitrate-changed(text) => { root.export-bitrate-changed(text); }
+        bitrate-changed(mbps) => { root.export-bitrate-changed(mbps); }
         begin => { root.export-start(); }
         cancel => { root.export-cancel(); }
         reveal => { root.export-reveal(); }
@@ -659,6 +832,11 @@ export component App inherits Window {
     }
 
     SettingsDialog {
+        fill: root.sheets-fill;
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
         x: 0;
         y: 0;
         width: root.width;
@@ -690,7 +868,10 @@ export component App inherits Window {
         accent-custom-changed(colour) => { root.settings-accent-custom-changed(colour); }
         playhead-changed(colour) => { root.settings-playhead-changed(colour); }
         playhead-reset => { root.settings-playhead-reset(); }
+        scale-changed(index) => { root.settings-scale-changed(index); }
         playhead-stops-changed(on) => { root.settings-playhead-stops-changed(on); }
+        proxies-changed(on) => { root.settings-proxies-changed(on); }
+        gpu-changed(on) => { root.settings-gpu-changed(on); }
         magnetic-changed(on) => { root.settings-magnetic-changed(on); }
         download-source-changed(index) => { root.settings-download-source-changed(index); }
         download-base-edited(text) => { root.settings-download-base-edited(text); }
@@ -714,6 +895,11 @@ export component App inherits Window {
     callback relink-dismiss();
 
     ProjectDialog {
+        fill: root.sheets-fill;
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
         x: 0;
         y: 0;
         width: root.width;
@@ -732,6 +918,11 @@ export component App inherits Window {
     }
 
     RelinkDialog {
+        fill: root.sheets-fill;
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
         data: root.relink;
         relink-all => { root.relink-all(); }
         dismiss => { root.relink-dismiss(); }
@@ -744,6 +935,10 @@ export component App inherits Window {
     callback confirm-dismissed();
 
     ConfirmDialog {
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
         x: 0;
         y: 0;
         width: root.width;
@@ -753,52 +948,6 @@ export component App inherits Window {
         dismissed => { root.confirm-dismissed(); }
     }
 
-
-    CaptionsDialog {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        data: root.captions;
-        models: root.caption-models;
-
-        closed => { root.captions-closed(); }
-        text-edited(text) => { root.captions-text-edited(text); }
-        model-changed(index) => { root.captions-model-changed(index); }
-        placement-changed(index) => { root.captions-placement-changed(index); }
-        size-changed(index) => { root.captions-size-changed(index); }
-        begin => { root.captions-begin(); }
-        cancel => { root.captions-cancel(); }
-    }
-
-    SpeechDialog {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        data: root.speech;
-        models: root.speech-models;
-        model-details: root.speech-model-details;
-        voices: root.speech-voices;
-        voice-details: root.speech-voice-details;
-        samples: root.speech-samples;
-        sample-waves: root.speech-sample-waves;
-        sample-details: root.speech-sample-details;
-
-        closed => { root.speech-closed(); }
-        text-edited(text) => { root.speech-text-edited(text); }
-        voice-changed(index) => { root.speech-voice-changed(index); }
-        model-changed(index) => { root.speech-model-changed(index); }
-        speed-changed(value) => { root.speech-speed-changed(value); }
-        quality-changed(index) => { root.speech-quality-changed(index); }
-        pauses-changed(value) => { root.speech-pauses-changed(value); }
-        reference-start-changed(seconds) => { root.speech-reference-start-changed(seconds); }
-        use-sample-changed(on) => { root.speech-use-sample-changed(on); }
-        sample-changed(index) => { root.speech-sample-changed(index); }
-        insert-tag(text, tag, at) => { return root.speech-insert-tag(text, tag, at); }
-        begin => { root.speech-begin(); }
-        cancel => { root.speech-cancel(); }
-    }
 
     // Over the workspace and both sheets, under the menus. A tooltip has to
     // clear the pane it belongs to — panes clip — and it has no business over

@@ -38,6 +38,8 @@ import {
     WheelGroupData,
 } from "grading.slint";
 import {
+    Backdrop,
+    BackdropData,
     ClipField,
     ClipKind,
     Keyframes,
@@ -921,6 +923,81 @@ component Hairline inherits HorizontalLayout {
     }
 }
 
+/// The rows that choose a background: what kind, then the one knob that
+/// kind has - a blur's softness, a colour, which still. The timeline's in
+/// the Details panel, a clip's own in its Video panel, where one more kind
+/// leads the list: the timeline's, followed.
+export component BackgroundRows inherits VerticalLayout {
+    /// The selected clip's own rather than the timeline's.
+    in property <bool> own;
+
+    property <BackdropData> data: root.own ? Backdrop.clip : Backdrop.timeline;
+    property <int> picked: root.data.mode;
+    property <int> kind: root.data.mode;
+    // Seeded rather than bound: the knob writes it as it is dragged.
+    property <float> amount;
+    init => { root.amount = root.data.amount; }
+    changed data => { root.amount = root.data.amount; }
+
+    property <[string]> kinds: [
+        I18n.t("clipInspector.backgroundNone"),
+        I18n.t("clipInspector.backgroundBlur"),
+        I18n.t("common.color"),
+        I18n.t("clipInspector.backgroundImage"),
+    ];
+
+    Row {
+        label: I18n.t("clipInspector.background");
+        Select {
+            options: root.kinds;
+            // Set again whenever the kind changes: a press assigns `current`
+            // inside the control and ends a plain binding (#250).
+            property <int> shown: root.picked;
+            current: self.shown;
+            changed shown => { self.current = self.shown; }
+            changed(index) => {
+                Backdrop.set-mode(root.own, index);
+            }
+        }
+    }
+
+    if root.kind == 1: Param {
+        label: I18n.t("clipInspector.softness");
+        value <=> root.amount;
+        minimum: 0;
+        maximum: 1;
+        step: 0.01;
+        default-value: 0.5;
+        fmt: ParamFormat.fraction;
+        unit: "%";
+        unit-scale: 100;
+        changed(v) => { Backdrop.set-amount(root.own, v); }
+    }
+
+    if root.kind == 2: ColourField {
+        label: I18n.t("common.color");
+        value: root.data.colour;
+        alpha: false;
+        changed(colour) => { Backdrop.set-colour(root.own, colour); }
+    }
+
+    if root.kind == 3 && Backdrop.stills.length > 0: Row {
+        label: I18n.t("clipInspector.still");
+        Select {
+            options: Backdrop.stills;
+            property <int> still: root.data.still;
+            current: self.still;
+            changed still => { self.current = self.still; }
+            placeholder: I18n.t("clipInspector.pickStill");
+            changed(index) => { Backdrop.set-still(root.own, index); }
+        }
+    }
+
+    if root.kind == 3 && Backdrop.stills.length == 0: Note {
+        text: I18n.t("clipInspector.noStillsInBin");
+    }
+}
+
 /// Video: how the picture sits in the frame, how solid it is, and whether
 /// its background is keyed out.
 export component VideoPanel inherits VerticalLayout {
@@ -932,6 +1009,9 @@ export component VideoPanel inherits VerticalLayout {
     in property <[AppliedParamData]> params;
     /// The chain's colour knobs: the key's screen colour among them.
     in property <[ColourKnobData]> colours;
+    /// Fit and Fill under Transform, and the clip's Background section:
+    /// the desk's. A phone has them on a Canvas sheet of their own.
+    in property <bool> canvas: true;
     /// The custom cutout's brush; see Editor.
     in property <int> brush-tool;
     in property <float> brush-size;
@@ -1132,6 +1212,51 @@ export component VideoPanel inherits VerticalLayout {
                 unit: "%";
                 unit-scale: 100;
                 changed(v) => { root.set(ClipField.stretch-y, v); root.commit(); }
+            }
+
+            // The picture sized to the frame in one press: the whole of it
+            // inside, or the frame covered - what a landscape shot in a
+            // vertical cut needs one way or the other.
+            if root.canvas && Backdrop.can-frame: Row {
+                label: I18n.t("common.size");
+                Button {
+                    label: I18n.t("clipInspector.fit");
+                    glyph: Glyph.fit;
+                    horizontal-stretch: 1;
+                    clicked => { Backdrop.frame(false); }
+                }
+                Button {
+                    label: I18n.t("clipInspector.fill");
+                    glyph: Glyph.maximize;
+                    horizontal-stretch: 1;
+                    clicked => { Backdrop.frame(true); }
+                }
+            }
+        }
+    }
+
+    // What fills the frame where this picture does not reach: the
+    // timeline's background, or one of the clip's own. Only on the lowest
+    // picture lane, which is where a background is drawn.
+    if root.canvas && Backdrop.clip-has: Section {
+        canvas := SectionHeader {
+            title: I18n.t("phone.canvas");
+            collapsible: true;
+            HelpButton {
+                text: I18n.t("clipInspector.canvasHelp");
+            }
+        }
+
+        if canvas.open: SectionBody {
+            BackgroundRows {
+                own: true;
+            }
+            // As in CapCut: this clip's background for every picture on
+            // the main lane, which is how the timeline's is set.
+            Button {
+                label: I18n.t("clipInspector.applyToAll");
+                block: true;
+                clicked => { Backdrop.apply-to-all(); }
             }
         }
     }
@@ -1465,14 +1590,83 @@ export component VideoPanel inherits VerticalLayout {
     }
 }
 
+/// One half of Enhance's before and after: a label over the picture,
+/// fitted whole into a fixed height so the pair reads the same on a phone
+/// as in the desktop inspector, and nothing in the layout leans on the
+/// picture's own size.
+component PreviewHalf inherits VerticalLayout {
+    in property <string> label;
+    in property <image> source;
+
+    padding-left: Theme.pad;
+    padding-right: Theme.pad;
+    spacing: 4px;
+
+    Text {
+        text: root.label;
+        color: Theme.fg-muted;
+        font-size: Theme.fs-sm;
+    }
+    Rectangle {
+        height: 150px;
+        background: Theme.well;
+        border-radius: Theme.r-sm;
+        clip: true;
+
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.source;
+            image-fit: contain;
+        }
+    }
+}
+
 /// Enhance: the picture restored and enlarged by the model, into a copy the
-/// clip then shows. The header's tick starts it the first time; once there
-/// is a copy, it switches between the copy and the original without running
-/// the model again.
+/// clip then shows.
+///
+/// The header's tick never starts minutes of work by itself: it turns the
+/// section on - its settings, its preview and its button come alive - and,
+/// once there is a copy, switches the clip between the copy and its
+/// original without running the model again. The run is the button's:
+/// Enhance, Enhance again once there is a copy, and Terminate while one is
+/// going.
+///
+/// Below the tick, what the run is made with - Size and Strength - and a
+/// preview of the frame under the playhead at those settings, so the
+/// person judges the look, and what a whole run will cost, in seconds
+/// rather than after minutes of their machine. Strength is the answer to
+/// the waxen, "plastic" faces a full-strength enhancer is known for: it
+/// blends the model's answer back towards the original.
 export component EnhancePanel inherits VerticalLayout {
     in property <SelectedClipData> selected;
 
+    /// The tick: the section on or off, and the copy shown or not.
     callback enhance-set(on: bool);
+    /// 0 Auto, 1 once, 2 twice, 3 four times.
+    callback enhance-size(index: int);
+    callback enhance-strength(strength: float);
+    callback enhance-preview();
+    /// The button: a run with the settings as they are, or, while this
+    /// clip's run is going, its end.
+    callback enhance-run();
+
+    /// This clip's run is going: the button stops it rather than starts one.
+    property <bool> running: root.selected.enhance-progress >= 0;
+    /// The section is ticked: everything under the header answers.
+    property <bool> live: root.selected.enhance-on;
+
+    property <float> strength;
+
+    init => {
+        root.strength = root.selected.enhance-strength;
+    }
+    // Put back on every publish: a click on the row takes its binding, and
+    // the next clip's file may not take the size this one showed.
+    changed selected => {
+        root.strength = root.selected.enhance-strength;
+        sizes.current = root.selected.enhance-size;
+    }
 
     Section {
         first: true;
@@ -1481,19 +1675,100 @@ export component EnhancePanel inherits VerticalLayout {
             switchable: true;
             on: root.selected.enhance-on;
             switched(on) => { root.enhance-set(on); }
+            HelpButton {
+                text: I18n.t("clipInspector.enhanceExplain");
+            }
         }
 
         SectionBody {
-            if root.selected.enhance-progress >= 0: EnhanceRow {
+            if root.running: EnhanceRow {
                 progress: root.selected.enhance-progress;
                 fetching: root.selected.enhance-fetching;
             }
-            if root.selected.enhance-progress < 0: Note {
-                text: root.selected.enhance-linked
-                    ? (root.selected.enhance-on
-                        ? I18n.t("clipInspector.enhanceShowingCopy")
-                        : I18n.t("clipInspector.enhanceShowingOriginal"))
-                    : I18n.t("clipInspector.enhanceExplain");
+            if !root.running && root.selected.enhance-linked: Note {
+                text: root.selected.enhance-on
+                    ? I18n.t("clipInspector.enhanceShowingCopy")
+                    : I18n.t("clipInspector.enhanceShowingOriginal");
+            }
+
+            Row {
+                label: I18n.t("clipInspector.enhanceSize");
+                sizes := SegmentedControl {
+                    options: [
+                        I18n.t1("clipInspector.enhanceAuto", "\{root.selected.enhance-auto}x"),
+                        "1x",
+                        "2x",
+                        "4x",
+                    ];
+                    disabled: [
+                        false,
+                        false,
+                        !root.selected.enhance-fits-2x,
+                        !root.selected.enhance-fits-4x,
+                    ];
+                    current: root.selected.enhance-size;
+                    enabled: root.live;
+                    changed(index) => { root.enhance-size(index); }
+                }
+            }
+            if root.selected.enhance-size-note != "": Note {
+                text: root.selected.enhance-size-note;
+            }
+
+            Param {
+                label: I18n.t("clipInspector.enhanceStrength");
+                value <=> root.strength;
+                minimum: 0;
+                maximum: 1;
+                step: 0.01;
+                default-value: 0.75;
+                fmt: ParamFormat.fraction;
+                unit: "%";
+                unit-scale: 100;
+                enabled: root.live;
+                changed(v) => { root.enhance-strength(v); }
+            }
+            Note {
+                text: I18n.t("clipInspector.enhanceStrengthExplain");
+            }
+
+            Row {
+                Button {
+                    label: I18n.t("clipInspector.enhancePreview");
+                    enabled: root.live && !root.selected.enhance-busy;
+                    clicked => { root.enhance-preview(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                // One button for the run, whatever stage it is at. While
+                // this clip's run goes it is the way to stop it, even though
+                // the model is then busy; otherwise it waits for the model.
+                Button {
+                    primary: !root.running;
+                    danger: root.running;
+                    label: root.running ? I18n.t("clipInspector.enhanceTerminate")
+                        : root.selected.enhance-linked ? I18n.t("clipInspector.enhanceAgain")
+                        : I18n.t("clipInspector.enhanceRun");
+                    enabled: root.running || (root.live && !root.selected.enhance-busy);
+                    clicked => { root.enhance-run(); }
+                }
+            }
+            if root.selected.enhance-previewing: Note {
+                text: root.selected.enhance-preview-fetch >= 0
+                    ? I18n.t1("clipInspector.fetchingTheModel",
+                        "\{Math.round(root.selected.enhance-preview-fetch * 100)}")
+                    : I18n.t("clipInspector.enhancePreviewing");
+            }
+
+            if root.selected.enhance-preview: PreviewHalf {
+                label: I18n.t("clipInspector.enhanceBefore");
+                source: root.selected.enhance-before;
+            }
+            if root.selected.enhance-preview: PreviewHalf {
+                label: I18n.t1("clipInspector.enhanceAfter", "\{Math.round(root.strength * 100)}");
+                source: root.selected.enhance-after;
+            }
+            if root.selected.enhance-preview: Note {
+                text: root.selected.enhance-estimate;
             }
         }
     }
@@ -1592,7 +1867,7 @@ export component AudioPanel inherits VerticalLayout {
     /// The Source section has something to offer: a choice of audio track.
     /// A file's colour range used to sit here too and is the media's now,
     /// in the bin card's menu: it is a fact about the file, not the cut.
-    property <bool> choosing: root.audio-tracks.length > 1;
+    property <bool> choosing: !root.selected.batch-volume && root.audio-tracks.length > 1;
 
     callback set(field: ClipField, value: float);
     callback commit();
@@ -1657,7 +1932,7 @@ export component AudioPanel inherits VerticalLayout {
         if volume.open: SectionBody {
             Param {
                 label: I18n.t("common.level");
-                keyable: true;
+                keyable: !root.selected.batch-volume;
                 field: ClipField.volume;
                 rail: true;
                 value <=> root.level;
@@ -1678,7 +1953,7 @@ export component AudioPanel inherits VerticalLayout {
         }
     }
 
-    Section {
+    if !root.selected.batch-volume: Section {
         fades := SectionHeader {
             title: I18n.t("clipInspector.fades");
             collapsible: true;
@@ -1726,7 +2001,7 @@ export component AudioPanel inherits VerticalLayout {
     // Whether the voice keeps its pitch when the rate is not 1. Here and
     // not on the Speed tab: the rate is the clip's, but what it does to the
     // sound is the sound's business, beside the level it is mixed at.
-    Section {
+    if !root.selected.batch-volume: Section {
         SectionHeader {
             title: I18n.t("clipInspector.pitch");
         }

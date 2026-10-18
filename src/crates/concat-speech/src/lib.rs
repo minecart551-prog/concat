@@ -26,10 +26,9 @@ pub use transcribe::Transcriber;
 pub use tts::Speech;
 
 /// Whether the voices ask for the machine's own accelerator: CoreML, the
-/// Mac's GPU and Neural Engine, and on Windows DirectML for Chatterbox -
-/// Kokoro and Pocket run through sherpa's own runtime, which k2-fsa builds
-/// for the CPU there, so they stay on it. Linux has no accelerator in the
-/// runtime the app ships. Not a setting. Measured on an M5 against
+/// Mac's GPU and Neural Engine. Windows and Linux have none in the runtime
+/// the app ships - Windows' is Microsoft's CPU build, and asking it for
+/// DirectML crashed Chatterbox on its second network (#399). Not a setting. Measured on an M5 against
 /// the CPU, a warm read took 10.3 s against 14.8 for Kokoro (and came out
 /// sample for sample the same), 5.6 against 6.5 for Pocket and 48.6
 /// against 60.6 for Chatterbox. The one cost is Chatterbox's load, about
@@ -37,7 +36,30 @@ pub use tts::Speech;
 /// run since the engine stays loaded. A model that will not load for CoreML
 /// at all loads for the CPU instead (tts.rs).
 pub const fn accelerated() -> bool {
-    cfg!(any(target_os = "macos", target_os = "windows"))
+    cfg!(target_os = "macos")
+}
+
+/// How far a transcription or a read has got, as it reports it: the stage
+/// it is in, and in the work itself where it is and where the step under
+/// way will leave it. A job is mostly long waits between reports - whisper
+/// reports once per thirty seconds of sound, sherpa once per sentence - and
+/// `next` is what lets a bar move through the wait without promising more
+/// than the job has done.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum JobStage {
+    /// Reading the sound in: a clip's, or the recording a voice is read
+    /// from.
+    Reading,
+    /// Loading the model. Not reported when it is still loaded from the
+    /// run before.
+    Loading,
+    /// The work itself.
+    Working {
+        /// How much of it is finished, `0..=1`.
+        done: f32,
+        /// Where the step under way ends, `done..=1`.
+        next: f32,
+    },
 }
 
 /// Progress for one model download.
