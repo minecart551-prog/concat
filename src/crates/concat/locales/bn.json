@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "সব রিসেট করুন",
   "shortcuts.rippleDelete": "মুছে ফাঁক বন্ধ করুন",
   "shortcuts.selectAll": "সব নির্বাচন করুন",
+  "shortcuts.selectAllLeft": "প্লেহেডের বাঁদিক সব নির্বাচন করুন",
+  "shortcuts.selectAllRight": "প্লেহেডের ডানদিক সব নির্বাচন করুন",
   "shortcuts.splitTool": "বিভক্তকরণ টুল",
   "shortcuts.stepBack": "এক ফ্রেম পেছনে",
   "shortcuts.stepForward": "এক ফ্রেম সামনে",

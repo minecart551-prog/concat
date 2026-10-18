@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Сбросить всё",
   "shortcuts.rippleDelete": "Удалить и закрыть зазор",
   "shortcuts.selectAll": "Выделить всё",
+  "shortcuts.selectAllLeft": "Выделить всё слева от курсора",
+  "shortcuts.selectAllRight": "Выделить всё справа от курсора",
   "shortcuts.splitTool": "Инструмент разрезания",
   "shortcuts.stepBack": "Назад на кадр",
   "shortcuts.stepForward": "Вперёд на кадр",

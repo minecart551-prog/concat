@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Tout réinitialiser",
   "shortcuts.rippleDelete": "Supprimer et fermer l'espace",
   "shortcuts.selectAll": "Tout sélectionner",
+  "shortcuts.selectAllLeft": "Tout sélectionner à gauche de la tête de lecture",
+  "shortcuts.selectAllRight": "Tout sélectionner à droite de la tête de lecture",
   "shortcuts.splitTool": "Outil de coupe",
   "shortcuts.stepBack": "Reculer d'une image",
   "shortcuts.stepForward": "Avancer d'une image",

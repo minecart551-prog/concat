@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "รีเซ็ตทั้งหมด",
   "shortcuts.rippleDelete": "ลบทิ้งและปิดช่องว่าง",
   "shortcuts.selectAll": "เลือกทั้งหมด",
+  "shortcuts.selectAllLeft": "เลือกทั้งหมดด้านซ้ายของหัวเล่น",
+  "shortcuts.selectAllRight": "เลือกทั้งหมดด้านขวาของหัวเล่น",
   "shortcuts.splitTool": "เครื่องมือแยก",
   "shortcuts.stepBack": "ถอยหลังหนึ่งเฟรม",
   "shortcuts.stepForward": "เดินหน้าหนึ่งเฟรม",

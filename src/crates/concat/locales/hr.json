@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Vrati sve na zadano",
   "shortcuts.rippleDelete": "Obriši i zatvori razmak",
   "shortcuts.selectAll": "Odaberi sve",
+  "shortcuts.selectAllLeft": "Odaberi sve lijevo od playheada",
+  "shortcuts.selectAllRight": "Odaberi sve desno od playheada",
   "shortcuts.splitTool": "Alat za rezanje",
   "shortcuts.stepBack": "Natrag jedan kadar",
   "shortcuts.stepForward": "Naprijed jedan kadar",

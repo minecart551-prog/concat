@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "모두 초기화",
   "shortcuts.rippleDelete": "삭제하고 간격 닫기",
   "shortcuts.selectAll": "모두 선택",
+  "shortcuts.selectAllLeft": "재생 헤드 왼쪽 모두 선택",
+  "shortcuts.selectAllRight": "재생 헤드 오른쪽 모두 선택",
   "shortcuts.splitTool": "자르기 도구",
   "shortcuts.stepBack": "1프레임 뒤로",
   "shortcuts.stepForward": "1프레임 앞으로",

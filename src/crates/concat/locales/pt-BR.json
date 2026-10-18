@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Redefinir tudo",
   "shortcuts.rippleDelete": "Excluir e fechar o espaço",
   "shortcuts.selectAll": "Selecionar tudo",
+  "shortcuts.selectAllLeft": "Selecionar tudo à esquerda do cursor",
+  "shortcuts.selectAllRight": "Selecionar tudo à direita do cursor",
   "shortcuts.splitTool": "Ferramenta de corte",
   "shortcuts.stepBack": "Voltar um quadro",
   "shortcuts.stepForward": "Avançar um quadro",

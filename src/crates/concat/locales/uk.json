@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Скинути все",
   "shortcuts.rippleDelete": "Видалити й закрити проміжок",
   "shortcuts.selectAll": "Вибрати все",
+  "shortcuts.selectAllLeft": "Вибрати все ліворуч від курсора",
+  "shortcuts.selectAllRight": "Вибрати все праворуч від курсора",
   "shortcuts.splitTool": "Інструмент розрізання",
   "shortcuts.stepBack": "Крок назад (кадр)",
   "shortcuts.stepForward": "Крок уперед (кадр)",

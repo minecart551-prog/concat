@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "سب ری سیٹ کریں",
   "shortcuts.rippleDelete": "حذف کریں اور فاصلہ بند کریں",
   "shortcuts.selectAll": "سب منتخب کریں",
+  "shortcuts.selectAllLeft": "پلے ہیڈ کے بائیں سب منتخب کریں",
+  "shortcuts.selectAllRight": "پلے ہیڈ کے دائیں سب منتخب کریں",
   "shortcuts.splitTool": "تقسیم ٹول",
   "shortcuts.stepBack": "ایک فریم پیچھے",
   "shortcuts.stepForward": "ایک فریم آگے",

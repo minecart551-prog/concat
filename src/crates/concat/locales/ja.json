@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "すべてリセット",
   "shortcuts.rippleDelete": "削除して隙間を詰める",
   "shortcuts.selectAll": "すべて選択",
+  "shortcuts.selectAllLeft": "再生ヘッドの左側をすべて選択",
+  "shortcuts.selectAllRight": "再生ヘッドの右側をすべて選択",
   "shortcuts.splitTool": "分割ツール",
   "shortcuts.stepBack": "1フレーム戻る",
   "shortcuts.stepForward": "1フレーム進む",

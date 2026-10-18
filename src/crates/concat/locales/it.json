@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Reimposta tutto",
   "shortcuts.rippleDelete": "Elimina e chiudi lo spazio",
   "shortcuts.selectAll": "Seleziona tutto",
+  "shortcuts.selectAllLeft": "Seleziona tutto a sinistra della testina",
+  "shortcuts.selectAllRight": "Seleziona tutto a destra della testina",
   "shortcuts.splitTool": "Strumento di taglio",
   "shortcuts.stepBack": "Torna indietro di un fotogramma",
   "shortcuts.stepForward": "Avanza di un fotogramma",

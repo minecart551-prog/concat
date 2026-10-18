@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "بازنشانی همه",
   "shortcuts.rippleDelete": "حذف و بستن فاصله",
   "shortcuts.selectAll": "انتخاب همه",
+  "shortcuts.selectAllLeft": "انتخاب همه در سمت چپ نشانگر پخش",
+  "shortcuts.selectAllRight": "انتخاب همه در سمت راست نشانگر پخش",
   "shortcuts.splitTool": "ابزار برش",
   "shortcuts.stepBack": "یک فریم به عقب",
   "shortcuts.stepForward": "یک فریم به جلو",

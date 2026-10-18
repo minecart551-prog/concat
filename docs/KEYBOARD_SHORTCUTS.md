@@ -31,6 +31,7 @@ On the start screen only `Ctrl` + `O`, `Ctrl` + `Q` (Windows/Linux) and `Ctrl` +
 | `Ctrl` + `Z` | Undo |
 | `Ctrl` + `Shift` + `Z`, or `Ctrl` + `Y` on Windows/Linux | Redo |
 | `Ctrl` + `A` | Select all |
+| `[` / `]` | Select all to the left / right of the playhead (whole clips only; locked lanes are left out) |
 | `Ctrl` + `C` / `Ctrl` + `V` | Copy / paste |
 | `Ctrl` + `D` | Duplicate the selected clip |
 | `H` | Toggle the pan (hand) tool |

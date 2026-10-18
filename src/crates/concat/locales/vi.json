@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Đặt lại tất cả",
   "shortcuts.rippleDelete": "Xóa và khép khoảng trống",
   "shortcuts.selectAll": "Chọn tất cả",
+  "shortcuts.selectAllLeft": "Chọn tất cả bên trái đầu phát",
+  "shortcuts.selectAllRight": "Chọn tất cả bên phải đầu phát",
   "shortcuts.splitTool": "Công cụ tách",
   "shortcuts.stepBack": "Lùi một khung hình",
   "shortcuts.stepForward": "Tiến một khung hình",

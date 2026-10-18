@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Restablecer todo",
   "shortcuts.rippleDelete": "Eliminar y cerrar el hueco",
   "shortcuts.selectAll": "Seleccionar todo",
+  "shortcuts.selectAllLeft": "Seleccionar todo a la izquierda del cabezal",
+  "shortcuts.selectAllRight": "Seleccionar todo a la derecha del cabezal",
   "shortcuts.splitTool": "Herramienta de corte",
   "shortcuts.stepBack": "Retroceder un fotograma",
   "shortcuts.stepForward": "Avanzar un fotograma",

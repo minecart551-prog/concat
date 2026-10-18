@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Alle zurücksetzen",
   "shortcuts.rippleDelete": "Löschen und Lücke schließen",
   "shortcuts.selectAll": "Alles auswählen",
+  "shortcuts.selectAllLeft": "Alles links vom Abspielkopf auswählen",
+  "shortcuts.selectAllRight": "Alles rechts vom Abspielkopf auswählen",
   "shortcuts.splitTool": "Schneidewerkzeug",
   "shortcuts.stepBack": "Ein Bild zurück",
   "shortcuts.stepForward": "Ein Bild vor",

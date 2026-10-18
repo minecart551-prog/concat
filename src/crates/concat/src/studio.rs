@@ -12014,6 +12014,10 @@ impl Studio {
             "delete-left" => self.delete_to_playhead(PlayheadSide::Left),
             "delete-right" => self.delete_to_playhead(PlayheadSide::Right),
             "select-all" => self.select_all(),
+            // [ and ]: every clip wholly on one side of the playhead,
+            // the sides Delete Left and Right cut.
+            "select-all-left" => self.select_to_playhead(PlayheadSide::Left),
+            "select-all-right" => self.select_to_playhead(PlayheadSide::Right),
             // The phone's way out of the clip tools: nothing selected, the
             // way a press on an empty lane leaves it.
             "deselect" => {
@@ -12209,14 +12213,48 @@ impl Studio {
 
     /// Every clip on an unlocked lane.
     pub fn select_all(&mut self) {
+        self.select_where(None);
+    }
+
+    /// Every clip on an unlocked lane lying wholly on `side` of the
+    /// playhead: `[` and `]`, taking the sides Delete Left and Right
+    /// cut as a selection rather than a cut.
+    pub fn select_to_playhead(&mut self, side: PlayheadSide) {
+        self.select_where(Some(side));
+    }
+
+    /// The selection itself: every unlocked clip, or `side`'s when one
+    /// is asked for. A transition selected until now belonged to the
+    /// selection it was picked with, and goes as that selection does.
+    fn select_where(&mut self, side: Option<PlayheadSide>) {
         self.flush_commit();
-        self.selection = self
-            .timeline()
+        let at = f64::from(self.playhead);
+        self.selection =
+            Self::side_selection(self.timeline(), at, side, &|track_id| self.locked(track_id));
+        self.transition_selected = None;
+    }
+
+    /// What [`Self::select_where`] takes: clips on no locked lane that
+    /// lie wholly on `side` of `at` — or every unlocked clip when no
+    /// side is. A clip the line runs through is where the line is, not
+    /// to a side of it, so it joins neither.
+    fn side_selection(
+        timeline: &Timeline,
+        at: f64,
+        side: Option<PlayheadSide>,
+        locked: &dyn Fn(&str) -> bool,
+    ) -> Vec<String> {
+        timeline
             .clips
             .iter()
-            .filter(|clip| !self.locked(&clip.track_id))
+            .filter(|clip| !locked(&clip.track_id))
+            .filter(|clip| match side {
+                None => true,
+                Some(PlayheadSide::Left) => clip.start + clip.duration <= at,
+                Some(PlayheadSide::Right) => clip.start >= at,
+            })
             .map(|clip| clip.id.clone())
-            .collect();
+            .collect()
     }
 
     /// Tab `from` dropped at `slot`, a position counted over the strip as
@@ -12663,6 +12701,59 @@ mod tests {
         assert!(Studio::split_victims(&timeline, 2.0, &selection, locked).is_empty());
         // A playhead outside every clip cuts nothing, however much is picked.
         assert!(Studio::split_victims(&timeline, 40.0, &[], open).is_empty());
+    }
+
+    /// `[` and `]` take whole clips on one side of the playhead on open
+    /// lanes only: a clip the playhead runs through is where the line
+    /// is rather than to a side of it, and a locked lane stays out of
+    /// both sides — the split's rule for locks, kept on the selection.
+    #[test]
+    fn a_side_selection_keeps_to_whole_clips_on_open_lanes() {
+        use std::sync::Arc;
+
+        use concat_project::model::{Clip, ClipKind, Timeline};
+
+        use super::PlayheadSide;
+
+        let clip = |id: &str, track_id: &str, start: f64, duration: f64| {
+            Arc::new(Clip::blank(
+                id,
+                track_id,
+                ClipKind::Video,
+                "c",
+                start,
+                duration,
+            ))
+        };
+        // The line stands at 5: one clip ends on it, one begins on it,
+        // one runs through it, and the locked lane's is right of it.
+        let timeline = Timeline {
+            clips: vec![
+                clip("a", "t0", 0.0, 4.0),
+                clip("b", "t0", 6.0, 4.0),
+                clip("c", "t1", 2.0, 8.0),
+                clip("d", "t2", 6.0, 2.0),
+                clip("e", "t1", 4.0, 1.0),
+                clip("f", "t1", 5.0, 1.0),
+            ],
+            ..Timeline::default()
+        };
+        let locked: &dyn Fn(&str) -> bool = &|track_id| track_id == "t2";
+        // No side: every open lane, the locked lane's clip apart.
+        assert_eq!(
+            Studio::side_selection(&timeline, 5.0, None, locked),
+            ["a", "b", "c", "e", "f"]
+        );
+        // Left: ends at or before the line — and only that.
+        assert_eq!(
+            Studio::side_selection(&timeline, 5.0, Some(PlayheadSide::Left), locked),
+            ["a", "e"]
+        );
+        // Right: starts at or after it — still never the locked lane's.
+        assert_eq!(
+            Studio::side_selection(&timeline, 5.0, Some(PlayheadSide::Right), locked),
+            ["b", "f"]
+        );
     }
 
     /// A copy of a split clip's tail, laid right after it, shows the

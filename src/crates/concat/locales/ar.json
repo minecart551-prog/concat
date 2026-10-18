@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "إعادة ضبط الكل",
   "shortcuts.rippleDelete": "احذف وأغلق الفجوة",
   "shortcuts.selectAll": "تحديد الكل",
+  "shortcuts.selectAllLeft": "تحديد كل ما يسار مؤشر التشغيل",
+  "shortcuts.selectAllRight": "تحديد كل ما يمين مؤشر التشغيل",
   "shortcuts.splitTool": "أداة التقسيم",
   "shortcuts.stepBack": "خطوة إلى الخلف إطارًا",
   "shortcuts.stepForward": "خطوة إلى الأمام إطارًا",

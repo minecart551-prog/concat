@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "全部重置",
   "shortcuts.rippleDelete": "删除并闭合间隙",
   "shortcuts.selectAll": "全选",
+  "shortcuts.selectAllLeft": "全选播放头左侧",
+  "shortcuts.selectAllRight": "全选播放头右侧",
   "shortcuts.splitTool": "分割工具",
   "shortcuts.stepBack": "后退一帧",
   "shortcuts.stepForward": "前进一帧",

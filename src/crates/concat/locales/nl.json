@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Alles resetten",
   "shortcuts.rippleDelete": "Verwijderen en de opening sluiten",
   "shortcuts.selectAll": "Alles selecteren",
+  "shortcuts.selectAllLeft": "Alles links van afspeelkop selecteren",
+  "shortcuts.selectAllRight": "Alles rechts van afspeelkop selecteren",
   "shortcuts.splitTool": "Splitsgereedschap",
   "shortcuts.stepBack": "Een frame terug",
   "shortcuts.stepForward": "Een frame vooruit",

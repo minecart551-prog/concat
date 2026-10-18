@@ -77,6 +77,16 @@ pub const ACTIONS: &[Action] = &[
         id: "select-all",
         defaults: &["ctrl+a"],
     },
+    // The brackets take every clip on one side of the playhead — the
+    // sides Q and W cut, as a selection instead of a cut.
+    Action {
+        id: "select-all-left",
+        defaults: &["["],
+    },
+    Action {
+        id: "select-all-right",
+        defaults: &["]"],
+    },
     Action {
         id: "copy",
         defaults: &["ctrl+c"],
@@ -194,6 +204,8 @@ pub fn name(id: &str) -> String {
         "undo" => i18n::t("studio.undo"),
         "redo" => i18n::t("studio.redo"),
         "select-all" => i18n::t("shortcuts.selectAll"),
+        "select-all-left" => i18n::t("shortcuts.selectAllLeft"),
+        "select-all-right" => i18n::t("shortcuts.selectAllRight"),
         "copy" => i18n::t("common.copy"),
         "paste" => i18n::t("studio.paste"),
         "duplicate" => i18n::t("studio.duplicate"),
@@ -620,6 +632,12 @@ mod tests {
         assert_eq!(resolve(&prefs, "ctrl+plus"), Some("zoom-in"));
         assert_eq!(resolve(&prefs, "ctrl+="), Some("zoom-in"));
         assert_eq!(resolve(&prefs, "ctrl+,"), Some("settings"));
+        // The brackets: single marks, so they build chords of their own
+        // and take the two sides of the playhead.
+        assert_eq!(press("[", false, false).as_deref(), Some("["));
+        assert_eq!(press("]", false, false).as_deref(), Some("]"));
+        assert_eq!(resolve(&prefs, "["), Some("select-all-left"));
+        assert_eq!(resolve(&prefs, "]"), Some("select-all-right"));
         // Unmapped, so nothing takes it.
         assert_eq!(resolve(&prefs, "ctrl+h"), None);
         assert_eq!(resolve(&prefs, "shift+q"), None);

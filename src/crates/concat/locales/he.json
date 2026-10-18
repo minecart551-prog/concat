@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "איפוס הכול",
   "shortcuts.rippleDelete": "מחק וסגור את הפער",
   "shortcuts.selectAll": "בחר הכול",
+  "shortcuts.selectAllLeft": "בחר הכול משמאל לסמן ההפעלה",
+  "shortcuts.selectAllRight": "בחר הכול מימין לסמן ההפעלה",
   "shortcuts.splitTool": "כלי פיצול",
   "shortcuts.stepBack": "צעד אחורה פריים",
   "shortcuts.stepForward": "צעד קדימה פריים",

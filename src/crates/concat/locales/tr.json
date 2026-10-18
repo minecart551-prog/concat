@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Tümünü sıfırla",
   "shortcuts.rippleDelete": "Sil ve boşluğu kapat",
   "shortcuts.selectAll": "Tümünü seç",
+  "shortcuts.selectAllLeft": "Oynatma imlecinin solundaki tümünü seç",
+  "shortcuts.selectAllRight": "Oynatma imlecinin sağındaki tümünü seç",
   "shortcuts.splitTool": "Kesme aracı",
   "shortcuts.stepBack": "Bir kare geri",
   "shortcuts.stepForward": "Bir kare ileri",

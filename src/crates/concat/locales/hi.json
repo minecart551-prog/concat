@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "सभी रीसेट करें",
   "shortcuts.rippleDelete": "हटाएँ और अंतर बंद करें",
   "shortcuts.selectAll": "सभी चुनें",
+  "shortcuts.selectAllLeft": "प्लेहेड के बाईं ओर सभी चुनें",
+  "shortcuts.selectAllRight": "प्लेहेड के दाईं ओर सभी चुनें",
   "shortcuts.splitTool": "स्प्लिट टूल",
   "shortcuts.stepBack": "एक फ़्रेम पीछे",
   "shortcuts.stepForward": "एक फ़्रेम आगे",

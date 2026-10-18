@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Zresetuj wszystko",
   "shortcuts.rippleDelete": "Usuń i zamknij lukę",
   "shortcuts.selectAll": "Zaznacz wszystko",
+  "shortcuts.selectAllLeft": "Zaznacz wszystko na lewo od głowicy",
+  "shortcuts.selectAllRight": "Zaznacz wszystko na prawo od głowicy",
   "shortcuts.splitTool": "Narzędzie podziału",
   "shortcuts.stepBack": "Cofnij o klatkę",
   "shortcuts.stepForward": "Przesuń o klatkę",

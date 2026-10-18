@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Atur ulang semua",
   "shortcuts.rippleDelete": "Hapus dan tutup jaraknya",
   "shortcuts.selectAll": "Pilih semua",
+  "shortcuts.selectAllLeft": "Pilih semua di kiri penanda putar",
+  "shortcuts.selectAllRight": "Pilih semua di kanan penanda putar",
   "shortcuts.splitTool": "Alat pisah",
   "shortcuts.stepBack": "Mundur satu bingkai",
   "shortcuts.stepForward": "Maju satu bingkai",

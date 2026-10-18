@@ -493,6 +493,8 @@
   "shortcuts.resetAll": "Reset all",
   "shortcuts.rippleDelete": "Delete and close the gap",
   "shortcuts.selectAll": "Select all",
+  "shortcuts.selectAllLeft": "Select all to the left",
+  "shortcuts.selectAllRight": "Select all to the right",
   "shortcuts.splitTool": "Split tool",
   "shortcuts.stepBack": "Step back a frame",
   "shortcuts.stepForward": "Step forward a frame",
