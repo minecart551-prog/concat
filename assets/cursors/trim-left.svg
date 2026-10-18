@@ -1,30 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="36" height="24" viewBox="0 0 36 24">
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <!-- A clip's trailing edge: the triangle points into the clip, which lies
        to the left, and the bracket stands at the pointer - the edge itself -
-       its spine pushed right up against it, the spine's right face being the
-       hotspot, so the glyph reads as sitting on the boundary rather than
-       floating off it.
-       36 wide with the pointer at the canvas's centre, which all three trim
-       cursors share: the left triangle sits in the same slot here as it does
-       in trim-both, and the right one's slot is here too, empty. Sweeping
-       across a seam therefore changes what is drawn in place - the triangle
-       on the clip's side never jumps sideways with the swap. The canvas is
-       as wide as it is so the pointer can stay centred and the one-sided
-       art still has its full run: a triangle 9 across, a 3 of clear space,
-       then the bracket's 3.5 of arm and 2 of spine. Those proportions are
-       the ones that read as a triangle and a bracket at pointer size -
-       shorter arms leave a spine with two nubs, which reads as loose lines
-       and not as the bracket it is.
-       Flat and unoutlined by design: the triangle is the accent (Lime by
-       default - Theme.accent; a cursor is a file and cannot follow a custom
-       accent) and the bracket, twice the triangle's height yet finer than it
-       - 22 tall against 10 - white. The dropped copy beneath is the only
-       edge there is, so the white still reads over a bright filmstrip or a
-       light theme. -->
+       pushed right up against it, so the glyph reads as sitting on the
+       boundary rather than floating off it. Hotspot (24, 12), the canvas's
+       right end, which is where the pointer is. Flat and unoutlined by
+       design: the triangle is the accent (Lime by default - Theme.accent;
+       a cursor is a file and cannot follow a custom accent) and the
+       bracket, twice the triangle's height yet finer than it - 22 tall
+       against 10, with 2-wide arms - so it stands clear as a tall slim
+       bracket rather than a chunky one. The dropped copy beneath is the
+       only edge there is, so the white still reads over a bright
+       filmstrip or a light theme. -->
   <g transform="translate(0, 1)" opacity="0.42" fill="#05070a">
-    <path d="M0.5 12 L9.5 7 L9.5 17 Z"/>
-    <path d="M16 1 H18 V23 H16 V21 H12.5 V3 H16 Z"/>
+    <path d="M6 12 L15 7 L15 17 Z"/>
+    <path d="M18 1 H23.5 V23 H18 V21 H21.5 V3 H18 Z"/>
   </g>
-  <path d="M0.5 12 L9.5 7 L9.5 17 Z" fill="#cbf53f"/>
-  <path d="M16 1 H18 V23 H16 V21 H12.5 V3 H16 Z" fill="#ffffff"/>
+  <path d="M6 12 L15 7 L15 17 Z" fill="#cbf53f"/>
+  <path d="M18 1 H23.5 V23 H18 V21 H21.5 V3 H18 Z" fill="#ffffff"/>
 </svg>

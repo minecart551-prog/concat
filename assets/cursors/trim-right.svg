@@ -1,25 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="36" height="24" viewBox="0 0 36 24">
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
   <!-- A clip's leading edge: the triangle points into the clip, which lies
        to the right, and the bracket stands at the pointer - the edge itself -
-       its spine pushed right up against it, the spine's left face being the
-       hotspot, so the glyph reads as sitting on the boundary rather than
-       floating off it.
-       36 wide with the pointer at the canvas's centre, which all three trim
-       cursors share: the right triangle sits in the same slot here as it does
-       in trim-both, and the left one's slot is here too, empty. Sweeping
-       across a seam therefore changes what is drawn in place - the triangle
-       on the clip's side never jumps sideways with the swap. The mirror of
-       trim-left, and flat in the same way: the triangle the accent, the
-       bracket - twice the triangle's height yet finer than it, 22 tall
-       against 10 - white, with no outline on either. The proportions are the
-       ones that read as a triangle and a bracket at pointer size: a triangle
-       9 across, a 3 of clear space, then 3.5 of arm and 2 of spine. The
-       dropped copy beneath is the only edge there is so the white still
-       reads over a bright filmstrip or a light theme. -->
+       pushed right up against it, so the glyph reads as sitting on the
+       boundary rather than floating off it. Hotspot (0, 12), the canvas's
+       left end, which is where the pointer is. The mirror of trim-left, and
+       flat in the same way: the triangle the accent, the bracket - twice
+       the triangle's height yet finer than it, 22 tall against 10 with
+       2-wide arms - white, with no outline on either, the dropped copy
+       beneath being the only edge there is so the white still reads over a
+       bright filmstrip or a light theme. -->
   <g transform="translate(0, 1)" opacity="0.42" fill="#05070a">
-    <path d="M35.5 12 L26.5 7 L26.5 17 Z"/>
-    <path d="M20 1 H18 V23 H20 V21 H23.5 V3 H20 Z"/>
+    <path d="M18 12 L9 7 L9 17 Z"/>
+    <path d="M6 1 H0.5 V23 H6 V21 H2.5 V3 H6 Z"/>
   </g>
-  <path d="M35.5 12 L26.5 7 L26.5 17 Z" fill="#cbf53f"/>
-  <path d="M20 1 H18 V23 H20 V21 H23.5 V3 H20 Z" fill="#ffffff"/>
+  <path d="M18 12 L9 7 L9 17 Z" fill="#cbf53f"/>
+  <path d="M6 1 H0.5 V23 H6 V21 H2.5 V3 H6 Z" fill="#ffffff"/>
 </svg>
