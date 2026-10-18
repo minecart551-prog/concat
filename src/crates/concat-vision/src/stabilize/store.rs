@@ -112,12 +112,15 @@ const SAME_FRAME: f64 = 1e-4;
 /// the slowest rate anyone shoots.
 const SEAM: f64 = 0.05;
 
+/// What the motion cache holds for one file: the change time and byte
+/// length its analysis was made from, and the analysis itself.
+type CachedMotion = (SystemTime, u64, Arc<Motion>);
+
 impl Motion {
     /// The movement cached in `dir`, or `None` when nothing is, or what is
     /// there cannot be read. Read once per change of the file.
     pub fn read(dir: &Path) -> Option<Arc<Motion>> {
-        static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, u64, Arc<Motion>)>>> =
-            OnceLock::new();
+        static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedMotion>>> = OnceLock::new();
         let file = motion_file(dir);
         let meta = std::fs::metadata(&file).ok()?;
         let stamp = (
