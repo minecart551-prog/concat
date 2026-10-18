@@ -196,9 +196,6 @@ component Clip inherits Rectangle {
     /// What the frames get: the body less the band.
     property <length> frames-h: Math.max(0px, root.body-h - root.band-h);
 
-    /// Whether the lanes draw filmstrips at all; the tray's toggle, so a
-    /// busy cut can trade its thumbnails for headroom.
-    in property <bool> filmstrip: true;
     /// The filmstrip's tile at this lane's height: one frame, as wide as
     /// the frame is tall. It lives up here rather than on the filmstrip
     /// itself because the gate below has to be answered before the
@@ -211,8 +208,8 @@ component Clip inherits Rectangle {
     /// from another, and still a draw of its own on every frame for every
     /// clip in view. That sliver was most of what a lanes full of clips
     /// cost, so it is gone; the clip keeps its well and its sound band.
-    property <bool> show-strip: root.filmstrip
-        && root.item.strip.frames > 0
+    property <bool> show-strip: root.item.strip.frames > 0
+        && root.width > 0px
         && root.width > 0px
         && root.width >= root.strip-tile-w / 3;
     /// A fade on a picture clip is shaded in a band at the foot instead of
@@ -1168,10 +1165,6 @@ export component Lanes inherits Rectangle {
     /// and the monitor shows the frame under it. Off, the lanes say nothing
     /// about where the pointer is.
     in property <bool> preview-axis: false;
-    /// Whether the lanes draw filmstrips. The tray's button; see
-    /// `Editor.filmstrip`. Off, a picture clip keeps its well and its
-    /// sound band, which is what it shows before its strip arrives.
-    in property <bool> filmstrip: true;
     /// The zoom: seconds covered by one pixel.
     in property <float> seconds-per-pixel: 0.05;
     in property <length> track-scroll;
@@ -1641,7 +1634,6 @@ export component Lanes inherits Rectangle {
             viewport-width: parent.width;
             tool: root.tool;
             edge-grab: root.edge-grab;
-            filmstrip: root.filmstrip;
             // Read back through the lane the clip sits on rather than carried
             // on the clip: locking is a property of the lane, and copying it
             // onto every clip would be one more thing to keep in step.

@@ -9426,7 +9426,6 @@ impl Studio {
         editor.set_meters_shown(self.prefs.meters_shown());
         editor.set_preview_axis(self.prefs.preview_axis);
         editor.set_preview_axis_audio(self.prefs.preview_axis_audio);
-        editor.set_filmstrip(self.prefs.filmstrip);
         editor.set_pan_mode(self.lanes.pan_mode);
         editor.set_selected_count(self.selection.len() as i32);
         // The tray's undo and redo buttons grey out on these; the Edit menu
@@ -12705,7 +12704,7 @@ mod tests {
 
     /// `[` and `]` take clips on one side of the playhead on open
     /// lanes only: the clip the line runs through reaches both ways and
-    /// joins either pick, and a locked lane stays out of both sides -
+    /// joins either pick, and a locked lane stays out of both sides —
     /// the split's rule for locks, kept on the selection.
     #[test]
     fn a_side_selection_takes_the_playheads_clip_too_on_open_lanes() {

@@ -161,9 +161,6 @@ export component TimelineTray inherits Rectangle {
     in property <bool> trim-follow: false;
     /// The preview axis: the monitor follows the pointer across the lanes.
     in property <bool> preview-axis: false;
-    /// The lanes' filmstrips: off, the clips keep their well and their
-    /// sound band and the lanes stop paying for a thumbnail per clip.
-    in property <bool> filmstrip: true;
     in property <int> selected-count;
     /// A transition is selected on its own: the trash takes it off.
     in property <bool> transition-selected;
@@ -196,7 +193,6 @@ export component TimelineTray inherits Rectangle {
     callback pan-changed(on: bool);
     callback trim-follow-changed(on: bool);
     callback preview-axis-changed(on: bool);
-    callback filmstrip-changed(on: bool);
     /// The chevron beside the preview axis: open its menu under the button
     /// at this x, in the tray's coordinates. The pane hosts the menu; see
     /// there for why.
@@ -429,22 +425,6 @@ export component TimelineTray inherits Rectangle {
         }
 
         Rectangle { horizontal-stretch: 1; }
-
-        // The lanes' filmstrips. A thumbnail per clip is the lanes' most
-        // expensive thing by a wide margin, and a cut with a hundred clips
-        // in view pays it on every frame. Put them down and the clips keep
-        // their well and their sound band - what a picture clip shows
-        // before its strip has arrived - and the lanes get their headroom
-        // back.
-        TrayButton {
-            glyph: Glyph.film;
-            label: root.filmstrip
-                ? I18n.t("tray.turnOffFilmstrip")
-                : I18n.t("tray.turnOnFilmstrip");
-            icon-size: 15px;
-            checked: root.filmstrip;
-            clicked => { root.filmstrip-changed(!root.filmstrip); }
-        }
 
         // The preview axis: the monitor shows the frame under the pointer
         // as it crosses the lanes, the playhead staying put. The chevron

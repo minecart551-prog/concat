@@ -754,9 +754,6 @@ fn wire(app: &App, shell: &Shell) {
     editor.on_preview_axis_audio_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Timeline(TimelineMsg::PreviewAxisAudioChanged(on)));
     }));
-    editor.on_filmstrip_changed(on_window!(|state, on: bool| {
-        state.handle(Msg::Timeline(TimelineMsg::FilmstripChanged(on)));
-    }));
     // The preview axis: on every move of the pointer across the lanes, so
     // it publishes the lanes and no more, the way a scrub does.
     editor.on_hovered(on_lanes!(|state, seconds: f32| {
