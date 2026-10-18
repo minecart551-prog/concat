@@ -268,8 +268,6 @@ impl Preferences {
             .filter(|location| std::path::Path::new(location).is_dir())
     }
 
-    /// Reads the file, or the defaults when there is none.
-
     /// Reads the file, or the defaults when there is none. The fallback
     /// goes through serde rather than `Default::default()`, so a
     /// preference that is on unless turned off - the lanes' filmstrips -
