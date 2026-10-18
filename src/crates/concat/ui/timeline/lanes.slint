@@ -203,15 +203,17 @@ component Clip inherits Rectangle {
     property <length> strip-tile-w: Math.max(4px,
         (root.banded ? root.frames-h : root.body-h) * root.item.strip.frame-width
         / Math.max(1, root.item.strip.height));
-    /// Whether the filmstrip is drawn. Below a third of a tile a clip
-    /// would show a sliver of one frame - too little to tell one picture
-    /// from another, and still a draw of its own on every frame for every
-    /// clip in view. That sliver was most of what a lanes full of clips
-    /// cost, so it is gone; the clip keeps its well and its sound band.
+    /// Whether the filmstrip is drawn. A clip narrower than 32px shows
+    /// too little of one frame to tell one picture from another, and is
+    /// still a draw of its own on every frame for every clip in view -
+    /// that sliver was most of what a lanes full of clips cost, so it is
+    /// gone, and the clip keeps its well and its sound band. The floor
+    /// is a constant and not a fraction of the tile: the tile widens as
+    /// the lane does, so a fraction of it would un-draw a clip's strip
+    /// on every track made taller, and a picture keeps its strip at any
+    /// height.
     property <bool> show-strip: root.item.strip.frames > 0
-        && root.width > 0px
-        && root.width > 0px
-        && root.width >= root.strip-tile-w / 3;
+        && root.width >= 32px;
     /// A fade on a picture clip is shaded in a band at the foot instead of
     /// over the whole body: the fade is an *audio* property, and shading the
     /// picture would say it fades to black. Sound shades its whole body; a
