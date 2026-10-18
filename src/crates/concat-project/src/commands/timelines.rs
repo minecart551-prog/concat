@@ -29,6 +29,8 @@ pub(super) fn apply(
                     id: mint.next("t"),
                     visible: true,
                     muted: false,
+                    size: None,
+                    height: None,
                     extra: Default::default(),
                 })
                 .collect();

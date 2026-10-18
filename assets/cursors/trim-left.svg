@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24" viewBox="0 0 32 24">
+  <!-- A clip's trailing edge: the triangle points into the clip, which lies
+       to the left, and the bracket stands at the pointer - the edge itself -
+       its spine pushed right up against it, the spine's right face being the
+       hotspot, so the glyph reads as sitting on the boundary rather than
+       floating off it.
+       32 wide with the pointer at the canvas's centre, which all three trim
+       cursors share: the left triangle sits in the same slot here as it does
+       in trim-both, and the right one's slot is here too, empty. Sweeping
+       across a seam therefore changes what is drawn in place - the triangle
+       on the clip's side never jumps sideways with the swap, which is what
+       the differing hotspots of the 24-wide art used to do.
+       Flat and unoutlined by design: the triangle is the accent (Lime by
+       default - Theme.accent; a cursor is a file and cannot follow a custom
+       accent) and the bracket, twice the triangle's height yet finer than it
+       - 22 tall against 10, with 2-wide arms - white. The dropped copy
+       beneath is the only edge there is, so the white still reads over a
+       bright filmstrip or a light theme. -->
+  <g transform="translate(0, 1)" opacity="0.42" fill="#05070a">
+    <path d="M1 12 L10 7 L10 17 Z"/>
+    <path d="M14 1 H16 V23 H14 V21 H11.5 V3 H14 Z"/>
+  </g>
+  <path d="M1 12 L10 7 L10 17 Z" fill="#cbf53f"/>
+  <path d="M14 1 H16 V23 H14 V21 H11.5 V3 H14 Z" fill="#ffffff"/>
+</svg>

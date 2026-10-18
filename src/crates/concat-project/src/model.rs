@@ -215,6 +215,18 @@ pub struct Track {
     pub visible: bool,
     /// Audio on this track is silent when true.
     pub muted: bool,
+    /// How the lane is sized, by name - "auto", "small", "medium", "large"
+    /// or "custom" - as the header's size menu writes it. Absent, or a name
+    /// this build no longer knows, is automatic: the lane takes the height
+    /// of the tallest thing on it. Kept on the lane rather than in the
+    /// view, because a layout is worth reopening a project to: it is the
+    /// cut the person left behind, not only where they were looking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    /// The height in logical pixels a divider dragged the lane to, which is
+    /// what `size` says "custom" about. Absent is the preset's own height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
     /// Fields this build does not know, kept so they round-trip.
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
@@ -226,6 +238,8 @@ impl Default for Track {
             id: String::new(),
             visible: true,
             muted: false,
+            size: None,
+            height: None,
             extra: Map::new(),
         }
     }

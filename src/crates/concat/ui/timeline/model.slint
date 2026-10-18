@@ -132,6 +132,20 @@ export struct ClipData {
     /// The frames a picture clip tiles along its body; `frames` is 0 when
     /// there are none yet.
     strip: StripData,
+    /// Another clip on the same lane ends exactly where this one begins: the
+    /// two butt up at a seam, which the lanes can then offer as one thing to
+    /// drag rather than two edges fighting over the same pixels.
+    join-before: bool,
+    /// Another clip on the same lane begins exactly where this one ends.
+    join-after: bool,
+    /// The clip that joins before this one is the selected one. The lanes
+    /// use it to give the cut to whichever side of it is in focus: a seam
+    /// under the pointer on this clip's side answers as the selected
+    /// clip's edge when that clip is the one across the cut, so a press
+    /// there trims it and nothing else.
+    join-before-selected: bool,
+    /// The clip that joins after this one is the selected one.
+    join-after-selected: bool,
 }
 
 

@@ -796,6 +796,37 @@ mod tests {
         }
     }
 
+    /// A clip cut from later in a file keeps the in-point it was copied
+    /// with when it lands somewhere earlier on the timeline. Deriving that
+    /// in-point by trimming the head of a clip laid out at the head of the
+    /// file could only ever give back the clip's own position - and clamped
+    /// at zero below it - so a copy of such a section played the file from
+    /// its start while the length still came out right.
+    #[test]
+    fn an_exact_span_keeps_an_in_point_past_where_it_lands() {
+        let (mut editor, media_id, _) = fixture();
+        let track_id = editor.project().active().tracks[0].id.clone();
+        let created = editor
+            .apply(Command::AddClipSpan {
+                media_id,
+                track_id,
+                start: 2.0,
+                source_start: 7.5,
+                duration: 2.0,
+            })
+            .expect("places")
+            .created_id
+            .expect("id");
+        let clip = editor.project().active().clip(&created).expect("placed");
+        assert_eq!(clip.start, 2.0, "where it was asked to land");
+        assert_eq!(clip.source_start, 7.5, "the part of the file it plays");
+        assert_eq!(clip.duration, 2.0, "the length it was asked for");
+        assert!(
+            clip.source_start > clip.start,
+            "the case a head trim can never reach"
+        );
+    }
+
     // ── magnetic trim: https://github.com/jub0t/Concat/issues/106 ──
 
     fn trim(clip_id: &str, edge: TrimEdge, delta: f64, ripple: bool) -> Command {
@@ -835,6 +866,121 @@ mod tests {
         assert_eq!(start_of(&editor, &behind[1]), 21.0);
     }
 
+    /// A magnetic trim spends the room the clip is standing in first: what
+    /// stays inside the gap before the next clip moves nobody, and a trim
+    /// that frees space does not pull the lane into the room it opened.
+    /// The lane only travels when the edge was already touching it, or when
+    /// the trim reaches past the gap and takes the next clip along for the
+    /// part that did.
+    #[test]
+    fn magnetic_trim_inside_free_space_moves_nothing_behind_it() {
+        let (mut editor, media_id, first) = fixture();
+        let video = editor.project().active().tracks[0].id.clone();
+        let behind = lane(&mut editor, &media_id, &video, &[14.0]);
+        // Four seconds of room behind the trim's clip: three of growth are
+        // its own, and the lane does not stir.
+        editor
+            .apply(trim(&first, TrimEdge::End, 3.0, true))
+            .expect("lengthens into the gap");
+        assert_eq!(start_of(&editor, &behind[0]), 14.0, "the room was there");
+        // Giving a second back frees more of the room and pulls the lane
+        // into none of it.
+        editor
+            .apply(trim(&first, TrimEdge::End, -1.0, true))
+            .expect("shortens back");
+        assert_eq!(start_of(&editor, &behind[0]), 14.0, "still not pulled");
+        // Past the gap the trim goes on and takes the next clip along for
+        // the part that reached it, so the cut ends tight.
+        editor
+            .apply(trim(&first, TrimEdge::End, 5.0, true))
+            .expect("reaches the lane");
+        let clip = editor
+            .project()
+            .active()
+            .clip(&first)
+            .expect("first")
+            .clone();
+        assert_eq!(clip.start + clip.duration, 17.0, "grown by the five");
+        assert_eq!(
+            start_of(&editor, &behind[0]),
+            17.0,
+            "moved by what reached past the gap, leaving the cut touching"
+        );
+    }
+
+    /// The mirror of the rule above, on a head: a magnetic extension
+    /// spends the room before the clip first, and the lane before it
+    /// follows only for what did not fit. The lane after never stirs.
+    #[test]
+    fn a_magnetic_head_extension_spends_the_room_before_it() {
+        let (mut editor, media_id, first) = fixture();
+        let video = editor.project().active().tracks[0].id.clone();
+        // The lane this trim works on is the second clip's alone: the one
+        // at zero has no room to give and would cap every overshoot.
+        editor
+            .apply(Command::RemoveClips {
+                clip_ids: vec![first],
+                ripple: false,
+            })
+            .expect("clears the head of the lane");
+        let front = lane(&mut editor, &media_id, &video, &[12.0])
+            .into_iter()
+            .next()
+            .expect("front");
+        // The target lands at 26 with ten seconds of file before its
+        // in-point, so its head has both the room and the reason to
+        // travel back.
+        let long = editor
+            .apply(media("/b.mp4", 60.0, true))
+            .expect("adds")
+            .created_id
+            .expect("id");
+        let target = editor
+            .apply(Command::AddClipSpan {
+                media_id: long,
+                track_id: video,
+                start: 26.0,
+                source_start: 10.0,
+                duration: 10.0,
+            })
+            .expect("places")
+            .created_id
+            .expect("id");
+        // Three back into the four of room before the head: the clip grows
+        // leftward and the lane before it does not stir.
+        editor
+            .apply(trim(&target, TrimEdge::Start, -3.0, true))
+            .expect("extends into the room");
+        assert_eq!(start_of(&editor, &target), 23.0, "grew into the gap");
+        assert_eq!(start_of(&editor, &front), 12.0, "the room was there");
+        // Seven more: one of room left and six of overshoot, paid by the
+        // lane before - which ends up exactly where the growing head
+        // needs it, and never past zero.
+        editor
+            .apply(trim(&target, TrimEdge::Start, -7.0, true))
+            .expect("reaches the lane before");
+        let target_clip = editor
+            .project()
+            .active()
+            .clip(&target)
+            .expect("target")
+            .clone();
+        assert_eq!(target_clip.start, 16.0, "head now touching");
+        assert_eq!(target_clip.duration, 20.0, "grown by the ten");
+        let front_clip = editor
+            .project()
+            .active()
+            .clip(&front)
+            .expect("front")
+            .clone();
+        assert_eq!(front_clip.start, 6.0, "moved by the six of overshoot");
+        assert_eq!(
+            front_clip.start + front_clip.duration,
+            16.0,
+            "the cut is tight"
+        );
+    }
+
     #[test]
     fn a_plain_trim_still_leaves_the_lane_alone() {
         let (mut editor, media_id, first) = fixture();
@@ -844,6 +990,132 @@ mod tests {
             .apply(trim(&first, TrimEdge::End, -2.0, false))
             .expect("shortens");
         assert_eq!(start_of(&editor, &behind[0]), 10.0);
+    }
+
+    // ── a roll: the seam between two clips dragged ──
+
+    /// The two commands a roll issues, in the order the window issues them,
+    /// leave the cut tight: each clip ends exactly where the other begins,
+    /// the lane spans what it spanned before because nothing after the seam
+    /// moves, and one undo puts the pair back — it is one step, not two.
+    ///
+    /// The order is the whole of it. Each clip's room is measured against
+    /// where the other has already got to, and a plain trim stops at its
+    /// neighbour: the clip that has to make room goes first, and the other
+    /// then fills the space exactly.
+    #[test]
+    fn a_roll_moves_the_seam_and_keeps_the_cut_tight() {
+        let (mut editor, media_id, first) = fixture();
+        let video = editor.project().active().tracks[0].id.clone();
+        let after = lane(&mut editor, &media_id, &video, &[10.0])[0].clone();
+
+        editor
+            .apply(Command::Batch {
+                commands: vec![
+                    // Right: the clip after gives way, and the one before
+                    // then reaches the seam it has opened.
+                    trim(&after, TrimEdge::Start, 2.0, false),
+                    trim(&first, TrimEdge::End, 2.0, false),
+                ],
+            })
+            .expect("rolls");
+        {
+            let timeline = editor.project().active();
+            let before = timeline.clip(&first).expect("before");
+            let taken = timeline.clip(&after).expect("after");
+            assert_eq!(before.duration, 12.0, "the tail grew by the travel");
+            assert_eq!(taken.start, 12.0, "the head went to meet it");
+            assert_eq!(taken.duration, 8.0, "giving up exactly what the other took");
+            assert_eq!(
+                taken.start + taken.duration,
+                20.0,
+                "and nothing past the seam moved at all"
+            );
+        }
+
+        assert!(editor.undo(), "one step");
+        let timeline = editor.project().active();
+        assert_eq!(timeline.clip(&first).expect("before").duration, 10.0);
+        assert_eq!(timeline.clip(&after).expect("after").start, 10.0);
+    }
+
+    /// Rolling a seam backwards spends the clip after's in-point, which is
+    /// the only thing that lets the head come back at all, and still ends
+    /// with the two joined and the lane the length it was.
+    #[test]
+    fn a_roll_backwards_spends_the_in_point_and_stays_joined() {
+        let (mut editor, media_id, first) = fixture();
+        let video = editor.project().active().tracks[0].id.clone();
+        let after = lane(&mut editor, &media_id, &video, &[10.0])[0].clone();
+        // Four seconds of file before the clip's head. Without it the seam
+        // could not come back a step: there is no footage there to show.
+        editor
+            .project_mut()
+            .active_mut()
+            .clip_mut(&after)
+            .expect("there")
+            .source_start = 4.0;
+
+        editor
+            .apply(Command::Batch {
+                commands: vec![
+                    trim(&first, TrimEdge::End, -3.0, false),
+                    trim(&after, TrimEdge::Start, -3.0, false),
+                ],
+            })
+            .expect("rolls back");
+        let timeline = editor.project().active();
+        let before = timeline.clip(&first).expect("before");
+        let taken = timeline.clip(&after).expect("after");
+        assert_eq!(
+            before.start + before.duration,
+            7.0,
+            "the tail gave up three"
+        );
+        assert_eq!(taken.start, 7.0, "the head took them, right at the seam");
+        assert_eq!(taken.duration, 13.0, "growing by what the other lost");
+        assert_eq!(
+            taken.source_start, 1.0,
+            "from a second later in the file, so its picture did not slide"
+        );
+        assert_eq!(taken.start + taken.duration, 20.0, "nothing past it moved");
+    }
+
+    /// Several edges trimmed by one press, on lanes that have nothing to do
+    /// with each other, travel as one Batch: every one of them changes,
+    /// none of them moves, and one undo puts all of them back. This is the
+    /// commit behind a multi-clip edge drag — the window hands every
+    /// selected clip's edge to this, together.
+    #[test]
+    fn edges_trimmed_together_all_change_and_come_back_in_one_step() {
+        let (mut editor, media_id, first) = fixture();
+        let sound = editor.project().active().tracks[1].id.clone();
+        let other = lane(&mut editor, &media_id, &sound, &[0.0])[0].clone();
+
+        editor
+            .apply(Command::Batch {
+                commands: vec![
+                    trim(&first, TrimEdge::End, -2.0, false),
+                    trim(&other, TrimEdge::End, -2.0, false),
+                ],
+            })
+            .expect("trims both");
+        {
+            let timeline = editor.project().active();
+            assert_eq!(
+                timeline.clip(&first).expect("first").duration,
+                8.0,
+                "the grabbed one"
+            );
+            let untouched = timeline.clip(&other).expect("the other lane");
+            assert_eq!(untouched.duration, 8.0, "and one that was only selected");
+            assert_eq!(untouched.start, 0.0, "on another lane, trimmed not moved");
+        }
+
+        assert!(editor.undo(), "one step for both");
+        let timeline = editor.project().active();
+        assert_eq!(timeline.clip(&first).expect("first").duration, 10.0);
+        assert_eq!(timeline.clip(&other).expect("other").duration, 10.0);
     }
 
     #[test]
@@ -894,35 +1166,39 @@ mod tests {
         assert_eq!(editor.can_undo(), before_can_undo, "a no-op is not a step");
     }
 
+    /// A magnetic head trim at the start of the timeline cannot restore
+    /// what it took off: restoring means growing leftward, and there is
+    /// no room before zero to grow into - so the trim finds nothing to
+    /// spend and does nothing, which is also exactly what the drag
+    /// preview shows the whole way.
     #[test]
-    fn magnetic_head_trim_restoring_source_pushes_the_lane_back() {
+    fn magnetic_head_trim_at_zero_cannot_restore_and_pays_nothing() {
         let (mut editor, media_id, first) = fixture();
         let video = editor.project().active().tracks[0].id.clone();
         let behind = lane(&mut editor, &media_id, &video, &[10.0]);
         editor
             .apply(trim(&first, TrimEdge::Start, 4.0, true))
             .expect("cuts four off the head");
-        assert_eq!(start_of(&editor, &behind[0]), 6.0);
-        // Ask for five back: only four exist, so four come back.
-        editor
+        assert_eq!(start_of(&editor, &behind[0]), 6.0, "the lane closed");
+        // Ask for five back: four of source exist, but no room at all to
+        // grow into - the head is at zero and nothing stands before it.
+        let outcome = editor
             .apply(trim(&first, TrimEdge::Start, -5.0, true))
-            .expect("restores what there is");
+            .expect("finds nothing to spend");
+        assert!(!outcome.applied, "no room before the head means no trim");
         let clip = editor
             .project()
             .active()
             .clip(&first)
             .expect("kept")
             .clone();
-        assert_eq!(
-            clip.start, 0.0,
-            "a magnetic clip at zero still does not move"
-        );
-        assert_eq!(clip.source_start, 0.0);
-        assert_eq!(clip.duration, 10.0);
+        assert_eq!(clip.start, 0.0, "still where it was");
+        assert_eq!(clip.source_start, 4.0, "the in-point it had");
+        assert_eq!(clip.duration, 6.0, "the length it had");
         assert_eq!(
             start_of(&editor, &behind[0]),
-            10.0,
-            "the lane went back by four"
+            6.0,
+            "the lane paid nothing and moved not"
         );
     }
 
@@ -3648,6 +3924,83 @@ mod tests {
             })
             .expect("tolerated");
         assert!(!outcome.applied);
+    }
+
+    #[test]
+    fn a_lane_layout_is_saved_with_the_project_and_never_undone() {
+        let (mut editor, _, clip_id) = fixture();
+        let track_id = editor.project().active().tracks[0].id.clone();
+
+        // A preset from the header's menu and a height a divider dragged
+        // are both written onto the lane itself, so a reopened document
+        // draws the layout it was left with - and neither is an edit: undo
+        // steps past them, however many lanes are sized on the way.
+        let before = editor.can_undo();
+        editor
+            .apply(Command::SetTrackSize {
+                track_id: track_id.clone(),
+                size: "large".to_owned(),
+                height: None,
+            })
+            .expect("sets");
+        editor
+            .apply(Command::SetTrackSize {
+                track_id: track_id.clone(),
+                size: "custom".to_owned(),
+                height: Some(96.0),
+            })
+            .expect("sets");
+        let track = &editor.project().active().tracks[0];
+        assert_eq!(track.size.as_deref(), Some("custom"));
+        assert_eq!(track.height, Some(96.0));
+        assert_eq!(editor.can_undo(), before, "a layout is view state");
+
+        // Through a save and a reopen, which is the whole point of it.
+        let document = editor.to_document(&settings());
+        let reopened = Editor::from_document(&document).expect("loads");
+        let track = &reopened.project().active().tracks[0];
+        assert_eq!(track.size.as_deref(), Some("custom"));
+        assert_eq!(track.height, Some(96.0));
+
+        // An edit made after it, and undone, leaves the layout standing:
+        // the snapshot history took for that edit already had the lane as
+        // it was sized, and that is what comes back.
+        editor
+            .apply(Command::SplitClips {
+                clip_ids: vec![clip_id],
+                time: 5.0,
+            })
+            .expect("splits");
+        editor.undo();
+        let track = &editor.project().active().tracks[0];
+        assert_eq!(track.size.as_deref(), Some("custom"));
+        assert_eq!(track.height, Some(96.0));
+
+        // A preset clears a height carried beside it, so the two can never
+        // disagree - not from the menu, and not from a hand-edited file.
+        editor
+            .apply(Command::SetTrackSize {
+                track_id: track_id.clone(),
+                size: "small".to_owned(),
+                height: Some(96.0),
+            })
+            .expect("sets");
+        let track = &editor.project().active().tracks[0];
+        assert_eq!(track.size.as_deref(), Some("small"));
+        assert_eq!(track.height, None, "a preset is its own height");
+
+        // An unknown lane applies nothing - and, being view state, records
+        // nothing either.
+        let before = editor.can_undo();
+        let outcome = editor
+            .apply(Command::SetTrackSize {
+                track_id: "nope".to_owned(),
+                size: "large".to_owned(),
+                height: None,
+            })
+            .expect("tolerated");
+        assert!(!outcome.applied);
+        assert_eq!(editor.can_undo(), before);
     }
 
     #[test]

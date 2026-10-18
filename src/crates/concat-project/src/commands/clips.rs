@@ -46,6 +46,36 @@ pub(super) fn apply(
             })
         }
 
+        // The spot is the caller's, not the nearest gap's: the in-point
+        // belongs to this position, so sliding the clip would slide the
+        // footage with it. Whoever decides where this lands has already
+        // found the room for it.
+        Command::AddClipSpan {
+            media_id,
+            track_id,
+            start,
+            source_start,
+            duration,
+        } => {
+            let media = project
+                .media_by_id(&media_id)
+                .ok_or(CommandError::MediaGone)?
+                .clone();
+            let timeline = project.active_mut();
+            if timeline.track(&track_id).is_none() {
+                return Err(CommandError::TrackGone);
+            }
+            let id = mint.next("c");
+            let mut clip = default_clip(id.clone(), track_id, &media, start);
+            clip.source_start = source_start.max(0.0);
+            clip.duration = duration.max(MIN_CLIP_DURATION);
+            timeline.clips.push(Arc::new(clip));
+            Ok(Outcome {
+                created_id: Some(id),
+                applied: true,
+            })
+        }
+
         Command::AddClipAtFirstFree { media_id, start } => {
             let media = project
                 .media_by_id(&media_id)
@@ -213,14 +243,33 @@ pub(super) fn apply(
             let track_id = clip.track_id.clone();
             let anchor = clip.start;
             let old_end = clip.start + clip.duration;
-            // A plain trim stops at the neighbours; a magnetic one moves
-            // them instead, so it has the lane's whole length.
+            // The gap the clip sits in: `room_around` measures it before
+            // the trim touches anything, which is the only time it says
+            // what the lane was standing at.
+            let (before, after) = timeline
+                .room_around(&clip_id)
+                .unwrap_or((0.0, f64::INFINITY));
+            // The lane before the clip, which a magnetic head extension
+            // spends past the room it has: how far the whole of the clips
+            // ending at the head may shift left is the frontmost one's
+            // start, since it may not pass zero. No such clip is no room.
+            let front = timeline
+                .clips
+                .iter()
+                .filter(|other| {
+                    other.track_id == track_id
+                        && other.id != clip_id
+                        && other.start + other.duration <= anchor + JOIN_EPSILON
+                })
+                .map(|other| other.start)
+                .fold(f64::INFINITY, f64::min);
+            let front = if front.is_finite() { front } else { 0.0 };
+            // A plain trim stops at the neighbours; a magnetic one has the
+            // lane's whole length, and takes the neighbours with it when it
+            // reaches them rather than on its way to them.
             let (floor, ceiling) = if ripple {
                 (0.0, f64::INFINITY)
             } else {
-                let (before, after) = timeline
-                    .room_around(&clip_id)
-                    .unwrap_or((0.0, f64::INFINITY));
                 (before, after)
             };
             let Some(clip) = timeline.clip_mut(&clip_id) else {
@@ -245,12 +294,20 @@ pub(super) fn apply(
                     // Dragging the head moves the in-point too, so the pixels
                     // under the remaining part of the clip do not slide. The
                     // head cannot reach before the source begins.
-                    let shift = delta
+                    let mut shift = delta
                         .min(clip.duration - MIN_CLIP_DURATION)
                         .max(-clip.source_start / clip.speed);
-                    // A magnetic head trim never moves the clip, so the
-                    // timeline's own start is no limit to it; a plain one
-                    // stops at zero.
+                    // A magnetic extension is spent the way a tail one is,
+                    // mirrored: the room before the head first, and the lane
+                    // before the clip - never the lane after it - for what
+                    // did not fit. The clip really does grow leftward, and
+                    // the lane before it only moves once the head has run
+                    // out of room of its own, which the timeline's start
+                    // caps at zero all the same.
+                    if ripple && shift < 0.0 {
+                        let gap = (anchor - before).max(0.0);
+                        shift = -(-shift).min(gap + front);
+                    }
                     let start = if ripple {
                         clip.start + shift
                     } else {
@@ -267,19 +324,58 @@ pub(super) fn apply(
                     if applied {
                         clip.rewindow_keys(old, moved, old);
                     }
-                    if ripple {
-                        // The in-point moved; the clip stays put, and the
-                        // lane behind it closes by what came off the head.
+                    if ripple && moved > 0.0 {
+                        // A shrink: the in-point moved, the clip stays put,
+                        // and the lane behind it closes by what came off
+                        // the head.
                         clip.start = anchor;
                     }
-                    (applied, -moved, anchor + JOIN_EPSILON)
+                    if ripple && applied && moved < 0.0 {
+                        // An extension: what did not fit in the room before
+                        // the head was paid by the lane before the clip,
+                        // which shifts left by the overshoot so the growing
+                        // head lands exactly touching it.
+                        let gap = (anchor - before).max(0.0);
+                        let overshoot = (-moved - gap).max(0.0);
+                        if overshoot > 0.0 {
+                            for other in timeline.clips_where(|other| {
+                                other.id != clip_id
+                                    && other.track_id == track_id
+                                    && other.start + other.duration <= anchor + JOIN_EPSILON
+                            }) {
+                                other.start = (other.start - overshoot).max(0.0);
+                            }
+                        }
+                    }
+                    // The lane behind follows a shrink and never an
+                    // extension, which is paid for before the head.
+                    (applied, (-moved).min(0.0), anchor + JOIN_EPSILON)
                 }
             };
             if ripple && applied && by != 0.0 {
-                for other in timeline.clips_where(|other| {
-                    other.id != clip_id && other.track_id == track_id && other.start >= behind
-                }) {
-                    other.start = (other.start + by).max(0.0);
+                // Free space is the trim's own to spend. What stays inside
+                // the gap before the next clip moves nobody, and a trim
+                // that gives space back does not pull the lane into the
+                // room it opened: the gap simply grows, which is what it
+                // was there for. Only a neighbour already touching follows
+                // the edge the whole way - closing behind it, stretching
+                // ahead of it - and a trim reaching past a gap takes the
+                // next clip along for the part that did, so the cut ends
+                // tight and the lane still has its whole length to give.
+                let gap = (after - old_end).max(0.0);
+                let shift = if gap <= JOIN_EPSILON {
+                    by
+                } else if by > 0.0 {
+                    (by - gap).max(0.0)
+                } else {
+                    0.0
+                };
+                if shift != 0.0 {
+                    for other in timeline.clips_where(|other| {
+                        other.id != clip_id && other.track_id == track_id && other.start >= behind
+                    }) {
+                        other.start = (other.start + shift).max(0.0);
+                    }
                 }
             }
             Ok(Outcome {
@@ -761,6 +857,8 @@ fn fresh_track(timeline: &mut Timeline, mint: &mut IdMint) -> String {
         id: id.clone(),
         visible: true,
         muted: false,
+        size: None,
+        height: None,
         extra: Default::default(),
     });
     id

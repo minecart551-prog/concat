@@ -665,7 +665,7 @@ fn wire(app: &App, shell: &Shell) {
     }));
     editor.on_split(on_window!(|state| {
         let at = state.playhead;
-        state.split_at(at, true);
+        state.split_at(at);
     }));
     editor.on_merge(on_window!(|state| {
         state.merge();
@@ -1618,7 +1618,7 @@ fn wire(app: &App, shell: &Shell) {
                         "delete" => state.delete_selected(),
                         "split" => {
                             let at = state.playhead;
-                            state.split_at(at, false);
+                            state.split_at(at);
                         }
                         "save" => state.save(true),
                         _ => {}

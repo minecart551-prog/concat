@@ -284,6 +284,32 @@ pub enum Command {
         #[serde(default)]
         ripple: bool,
     },
+    /// Footage at an exact spot with an exact in-point: the lane, the
+    /// timeline position, where in the file it begins and how much of the
+    /// file it covers, all as the caller decided them.
+    ///
+    /// [`Command::AddClip`] cannot stand in for this. It hunts for a gap
+    /// big enough for the whole file instead of taking the spot it is
+    /// given, and its in-point arrives by trimming the head back from
+    /// zero - which is only ever the clip's position minus where it was
+    /// laid out, and lands on zero whenever the clip cannot be laid out
+    /// before the point it plays from. A section cut from later in a file
+    /// is exactly that case, so every copy of one lost its in-point and
+    /// played the file from its start, with the length still right.
+    AddClipSpan {
+        /// The bin item to cut from.
+        media_id: String,
+        /// The lane to place it on.
+        track_id: String,
+        /// Timeline position in seconds, floored at 0.
+        start: f64,
+        /// Where in the file the clip begins, in seconds.
+        source_start: f64,
+        /// How much of the file it covers, in seconds at normal speed. A
+        /// speed set after this keeps the footage and recomputes the
+        /// length, as [`Command::SetClipSpeed`] does.
+        duration: f64,
+    },
     /// [`Command::AddClip`] without naming a lane: lands on the lowest
     /// track with nothing in the clip's span, falling back to the bottom
     /// track (overlap and all) rather than refusing.
@@ -649,6 +675,22 @@ pub enum Command {
         /// The new setting.
         value: bool,
     },
+    /// Sizes a lane: the preset the header's menu names, or the height a
+    /// divider dragged it to. View state - saved with the project so a
+    /// reopened one keeps its layout, never recorded in undo, since a lane
+    /// being tall is what the person was looking at and not the edit. See
+    /// [`Command::is_view_state`].
+    SetTrackSize {
+        /// The lane to size. An unknown id is a no-op.
+        track_id: String,
+        /// The preset by name: "auto", "small", "medium", "large",
+        /// "custom". A name this build does not know loads as automatic.
+        size: String,
+        /// The height in logical pixels a divider left the lane at, when
+        /// the preset is a custom one; `None` is the preset's own height.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<f64>,
+    },
     /// Adds a fresh timeline - four new lanes, "Timeline N" after the
     /// highest in use - and makes it active. Mints a "tl" id.
     AddTimeline,
@@ -867,12 +909,15 @@ fn next_numbered(name: &str, existing: impl Iterator<Item = String>) -> String {
 
 impl Command {
     /// True for a command that changes what the person is looking at, not
-    /// the edit: which timeline tab is showing and the order of the tabs.
-    /// Saved with the document, never recorded in undo history.
+    /// the edit: which timeline tab is showing, the order of the tabs, and
+    /// how tall a lane is drawn. Saved with the document, never recorded in
+    /// undo history - undo steps back through what changed the picture.
     pub fn is_view_state(&self) -> bool {
         matches!(
             self,
-            Command::SelectTimeline { .. } | Command::MoveTimeline { .. }
+            Command::SelectTimeline { .. }
+                | Command::MoveTimeline { .. }
+                | Command::SetTrackSize { .. }
         )
     }
 
@@ -905,6 +950,12 @@ impl Command {
             Command::AddClip { start, .. } | Command::AddClipAtFirstFree { start, .. } => {
                 bad([*start])
             }
+            Command::AddClipSpan {
+                start,
+                source_start,
+                duration,
+                ..
+            } => bad([*start, *source_start, *duration]),
             Command::AddShapeClip {
                 start,
                 duration,
@@ -1008,6 +1059,7 @@ impl Command {
                 .into_iter()
                 .flatten()
                 .copied()),
+            Command::SetTrackSize { height, .. } => bad(height.iter().copied()),
             _ => false,
         }
     }
@@ -1070,6 +1122,7 @@ pub fn apply(
         | Command::SetMediaColorRange { .. }) => media::apply(project, mint, command),
         command @ (Command::AddClip { .. }
         | Command::AddClipAtFirstFree { .. }
+        | Command::AddClipSpan { .. }
         | Command::AddTextClip { .. }
         | Command::AddShapeClip { .. }
         | Command::AddLayerClip { .. }
@@ -1098,7 +1151,8 @@ pub fn apply(
         }
         command @ (Command::AddTrack { .. }
         | Command::RemoveTrack { .. }
-        | Command::SetTrackFlag { .. }) => tracks::apply(project, mint, command),
+        | Command::SetTrackFlag { .. }
+        | Command::SetTrackSize { .. }) => tracks::apply(project, mint, command),
         command @ (Command::AddTimeline
         | Command::SetTimelineVideo { .. }
         | Command::RemoveTimeline { .. }

@@ -422,6 +422,10 @@ export component TimelinePane inherits Rectangle {
                 width: Math.max(0px, parent.width - root.headers-w - 1px);
                 height: parent.height;
 
+                // Rows are sized from the left panel's own grip, and never
+                // from a strip across the lanes; see `Lanes.row-resize`.
+                row-resize: false;
+
                 tracks: root.tracks;
                 clips: root.clips;
                 key-marks: root.key-marks;

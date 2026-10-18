@@ -128,7 +128,10 @@ component Clip inherits Rectangle {
     in property <length> px-per-second;
     in property <length> viewport-width: 1920px;
     in property <TimelineTool> tool;
-    /// how close to an edge counts as grabbing it
+    /// how close to an edge counts as grabbing it. Wide enough to hit on
+    /// purpose with a pointer and, on the phone, a thumb — six pixels was
+    /// a pixel-hunt — and still narrow enough that the body of even a short
+    /// clip is left to be its body.
     in property <length> edge-grab: 6px;
 
     /// A press landed: the caller resolves the selection before any drag.
@@ -219,7 +222,6 @@ component Clip inherits Rectangle {
     /// whole bar.
     property <length> fade-h: root.item.kind == ClipKind.audio ? root.body-h : root.body-h * 0.45;
 
-    /// -1 body, 0 leading edge, 1 trailing edge, 2 transition duration handle
     property <bool> has-transition: root.item.transition-duration > 0;
     property <length> transition-w: Math.max(18px, root.item.transition-duration * root.px-per-second);
     property <length> half-w: root.transition-w / 2;
@@ -238,10 +240,53 @@ component Clip inherits Rectangle {
         || root.right-handle-hover || root.right-handle-drag
         || root.left-handle-hover || root.left-handle-drag;
 
-    property <int> edge-at: (root.has-transition && touch.mouse-x < root.edge-grab) ? -1
-        : touch.mouse-x < root.edge-grab ? 0
-        : touch.mouse-x > root.width - root.edge-grab ? 1
+    /// How far in from a clip's end a press still counts as grabbing that
+    /// end. A seam is three jobs in the width of two edges - the left
+    /// clip's tail, the seam itself, the right clip's head - so it takes a
+    /// wider span than a lone edge, giving each of the three room to be
+    /// aimed at. Never more than a third of the clip, though: between two
+    /// neighbours a short clip still has to have a body to be picked up by.
+    property <length> join-grab: Math.min(14px, root.width / 3);
+    /// Half of a seam's middle - the part that drags the seam itself,
+    /// rolling the cut so the tail on one side and the head on the other
+    /// resize together. Outside it the clip nearest the pointer is the one
+    /// that resizes, on its own. Half, so the whole middle is twice this:
+    /// eight pixels was a stripe, and a stripe either side of it is what
+    /// the roll has to be caught in.
+    property <length> roll-half: 6px;
+    /// What sits under the pointer: -1 body, 0 leading edge, 1 trailing
+    /// edge, 3 the seam at this clip's tail with this clip on the left of
+    /// it, 4 the seam at its head with this clip on the right. 5 and 6 are
+    /// the same cut taken for another clip's benefit: the clip joining
+    /// before this one is the selected one and the press trims it (5), or
+    /// the clip joining after this one (6). 2, the transition duration
+    /// handle, never comes from here: the handles send it themselves.
+    ///
+    /// Neither 3 nor 4, and neither 5 nor 6, from a clip that is selected.
+    /// A cut belongs to whichever side of it is in focus: a selected clip
+    /// offers its own edge all the way to the seam — a trim of the
+    /// selection, which leaves the unselected neighbour at the cut
+    /// untouched — and the clip on the other side of that same cut offers
+    /// the selected clip's edge rather than its own or the seam's roll.
+    /// The roll is left to a cut with neither side selected, which offers
+    /// it from either edge of it as it always did.
+    property <int> edge-at:
+        (root.has-transition && touch.mouse-x < root.edge-grab) ? -1
+        : root.item.join-before && !root.item.selected && root.item.join-before-selected
+            && touch.mouse-x < root.join-grab ? 5
+        : root.item.join-before && !root.item.selected && touch.mouse-x < root.roll-half ? 4
+        : touch.mouse-x < (root.item.join-before ? root.join-grab : root.edge-grab) ? 0
+        : root.item.join-after && !root.item.selected && root.item.join-after-selected
+            && touch.mouse-x > root.width - root.join-grab ? 6
+        : root.item.join-after && !root.item.selected && touch.mouse-x > root.width - root.roll-half ? 3
+        : touch.mouse-x > root.width - (root.item.join-after ? root.join-grab : root.edge-grab) ? 1
         : -1;
+
+    /// What the press landed on, frozen at the moment it went down. The
+    /// zones under the pointer keep changing while a drag carries the clip
+    /// across them, and which gesture is in flight was settled by this one
+    /// number, so it stays as it was. -1 while nothing is pressed.
+    property <int> press-edge: -1;
 
     pure function format-seconds(s: float) -> string {
         let rounded = Math.round(s * 100);
@@ -524,6 +569,24 @@ component Clip inherits Rectangle {
         border-color: root.item.selected ? Theme.accent : root.mark;
     }
 
+    // ── the seam being rolled ────────────────────────────────────────────
+    //
+    // The contact point is the whole of a roll, and a roll takes the
+    // selection as it finds it, so neither of the two clips being resized
+    // is highlighted by it: this bar is what says where the cut is while
+    // the drag runs, drawn on the clip the pointer is holding, at the edge
+    // the seam rides - its tail when the press came from the right of the
+    // cut, its head when from the left. It rides the published clip, which
+    // the echo moves under the drag, so it moves with the seam itself.
+    if touch.pressed && !root.locked
+        && (root.press-edge == 3 || root.press-edge == 4): Rectangle {
+        x: root.press-edge == 3 ? parent.width - 3px : 0px;
+        y: 0;
+        width: 3px;
+        height: parent.height;
+        background: Theme.accent;
+    }
+
     // ── locked ───────────────────────────────────────────────────────────
     //
     // What `opacity: 0.55` used to say, said by a veil over the bar instead:
@@ -549,8 +612,45 @@ component Clip inherits Rectangle {
     // the same fix, as the workspace splitters.
     touch := TouchArea {
         enabled: !root.locked;
+        // What a grab here would resize, said in the pointer rather than
+        // left to be found out by dragging: the arrow points into the clip
+        // that moves, and both ways on a seam, where the drag moves the seam
+        // and trims the two clips with it. Both ways also on an edge with
+        // nothing abutting it, which may be pulled back or pushed out into
+        // the room it has: only an edge with a neighbour at its far side is
+        // one-way, since all it can do is shorten itself - growing would be
+        // growing over the clip already standing there.
+        //
+        // The seam's both ways has one exception and it is a selection.
+        // `edge-at` never answers 3 or 4 beside a selected clip (see
+        // there), and the clip on the unselected side of such a cut
+        // answers 5 or 6: the selected clip's own arrow, drawn across the
+        // seam into it. So a cut beside a clip in focus shows that one
+        // clip's arrow from either side of it, and every press under that
+        // arrow trims that clip alone. The roll is left to cuts with
+        // neither side selected.
+        //
+        // The OS's own arrows cannot say any of this - on Windows every
+        // horizontal resize is one cursor, and a theme may collapse them
+        // further - so these three are ours, drawn, which is the same
+        // cursor on every platform.
+        //
+        // And they share one hotspot, (16, 12) on a 32-wide canvas: the
+        // pointer sits at the same place in each file, so a swap at a zone
+        // border redraws the cursor in place. Three canvases anchored at
+        // their own ends and middle made the whole icon lurch sideways on
+        // every border crossed - the shifting nobody wants from a pointer.
         mouse-cursor: root.tool == TimelineTool.split ? MouseCursor.crosshair
-            : root.edge-at >= 0 ? MouseCursor.ew-resize : MouseCursor.grab;
+            : root.edge-at == 5 ? custom(@image-url("../../../../../assets/cursors/trim-left.svg"), 16, 12)
+            : root.edge-at == 6 ? custom(@image-url("../../../../../assets/cursors/trim-right.svg"), 16, 12)
+            : root.edge-at == 0 ? (root.item.join-before
+                ? custom(@image-url("../../../../../assets/cursors/trim-right.svg"), 16, 12)
+                : custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 16, 12))
+            : root.edge-at == 1 ? (root.item.join-after
+                ? custom(@image-url("../../../../../assets/cursors/trim-left.svg"), 16, 12)
+                : custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 16, 12))
+            : root.edge-at >= 3 ? custom(@image-url("../../../../../assets/cursors/trim-both.svg"), 16, 12)
+            : MouseCursor.grab;
 
         changed mouse-x => {
             if (self.has-hover && !self.pressed) { root.hovered(self.mouse-x); }
@@ -584,6 +684,7 @@ component Clip inherits Rectangle {
                 self.origin-y = self.absolute-position.y + self.mouse-y;
                 self.travelled = false;
                 self.on-edge = root.edge-at >= 0;
+                root.press-edge = root.edge-at;
                 root.pressed(event.modifiers.shift || event.modifiers.control
                     || event.modifiers.meta, root.edge-at);
             } else if (event.kind == PointerEventKind.up
@@ -593,6 +694,7 @@ component Clip inherits Rectangle {
                 // A release that never travelled ends the gesture and does
                 // nothing more: a click on a clip selects it and the
                 // playhead stays where it was.
+                root.press-edge = -1;
                 root.released();
             }
         }
@@ -1074,9 +1176,17 @@ export component Lanes inherits Rectangle {
     in property <float> seconds-per-pixel: 0.05;
     in property <length> track-scroll;
     in property <length> ruler-height: 28px;
-    /// How close to a clip's edge counts as taking hold of it. A pointer
-    /// finds six pixels; a finger wants more.
+    /// How close to a clip's edge counts as taking hold of it. Six pixels
+    /// was a pixel-hunt with a pointer, never mind a finger; ten is findable
+    /// without stealing the clip's body, and the phone asks for more still.
     in property <length> edge-grab: 6px;
+    /// A lane's height may be dragged from the lanes themselves. On a desk
+    /// it may not: the left panel is where rows are sized, and a strip
+    /// claiming the bottom of every lane across the whole width would be a
+    /// grab sitting under every scrub that reached the boundary. The phone
+    /// has no panel to size from, so it keeps the drag - hence the default
+    /// on, which the desk's own lanes turn off.
+    in property <bool> row-resize: true;
     /// The lanes are driven by a finger: a phone. The floor and the ruler
     /// are then one surface for one gesture - a drag along the cut scrubs,
     /// the lanes sliding under a playhead Rust holds at their middle, and a
@@ -1538,12 +1648,19 @@ export component Lanes inherits Rectangle {
         //
         // The foot of every lane is a grip: hold it and the boundary moves —
         // the lane above takes the height, the lane below gives it, so any
-        // lane can be sized by hand past the header's presets. The strip is
-        // the bottom 6px of the lane, which is the gap the clips already
-        // leave below them — they stop 6px short — and the same strip the
-        // headers' side of the boundary takes, so the two ends read as one
-        // line drawn across both surfaces. It hides no clip, and nothing
-        // else claims it.
+        // lane can be sized by hand past the header's presets. On a desk the
+        // grip that does this is the left panel's, and not this strip across
+        // the lanes: a full-width grab at every boundary is one more thing
+        // for a scrub to catch on, and the panel already answers for every
+        // row. `row-resize` says which of the two is true; the phone, which
+        // has no panel at all, has no one else to ask.
+        //
+        // The strip is the bottom 6px of the lane, which is the gap the clips
+        // already leave below them — they stop 6px short — and the same strip
+        // the headers' side of the boundary takes, so the two ends read as
+        // one line drawn across both surfaces. It hides no clip, and nothing
+        // else claims it; where it is not a grip it carries the hover, which
+        // runs through rather than dropping out over the boundary.
         //
         // The delta is taken in window coordinates, the way the scrollbar's
         // thumb takes it: this element moves with the boundary it reports,
@@ -1560,14 +1677,19 @@ export component Lanes inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                mouse-cursor: ns-resize;
+                // A cursor that offers nothing: on a desk this strip does
+                // not move the boundary, so it must not look as though it
+                // would.
+                mouse-cursor: root.row-resize
+                    ? MouseCursor.ns-resize : MouseCursor.default;
 
                 property <bool> armed;
                 property <length> from;
                 property <length> origin;
 
                 pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down
+                    if (root.row-resize
+                        && event.kind == PointerEventKind.down
                         && event.button == PointerEventButton.left) {
                         self.from = track.top + track.height;
                         self.origin = self.absolute-position.y + self.mouse-y;
@@ -1578,7 +1700,7 @@ export component Lanes inherits Rectangle {
                     }
                 }
                 moved => {
-                    if (self.armed) {
+                    if (root.row-resize && self.armed) {
                         root.lane-resized(row, self.from
                             + (self.absolute-position.y + self.mouse-y) - self.origin);
                     }
@@ -1595,7 +1717,7 @@ export component Lanes inherits Rectangle {
                 }
             }
 
-            if divider.has-hover || divider.armed: Rectangle {
+            if root.row-resize && (divider.has-hover || divider.armed): Rectangle {
                 x: 0;
                 y: 0;
                 width: parent.width;

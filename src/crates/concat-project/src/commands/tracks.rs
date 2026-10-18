@@ -22,6 +22,8 @@ pub(super) fn apply(
                 id: id.clone(),
                 visible: true,
                 muted: false,
+                size: None,
+                height: None,
                 extra: Default::default(),
             };
             // The stack is stored bottom first: the last track is the lane
@@ -71,6 +73,44 @@ pub(super) fn apply(
             Ok(Outcome {
                 created_id: None,
                 applied,
+            })
+        }
+
+        // View state: a lane's layout is saved with the project so a
+        // reopened one keeps it, and is never recorded in undo - see
+        // `Command::is_view_state`.
+        Command::SetTrackSize {
+            track_id,
+            size,
+            height,
+        } => {
+            let timeline = project.active_mut();
+            // An unknown id is the tolerated no-op, as SetTrackFlag's is.
+            let Some(track) = timeline
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == track_id)
+            else {
+                return Ok(Outcome {
+                    created_id: None,
+                    applied: false,
+                });
+            };
+            // A height belongs only to a custom size - a preset is its own
+            // height - and only a finite one above the floor: a document is
+            // read as well as written, and `NaN.clamp()` is NaN. Both the
+            // floor and the ceiling for a dragged height are the UI's
+            // (LANE_MIN, LANE_MAX); they are applied there, on the way in.
+            let height = (size == "custom")
+                .then_some(height)
+                .flatten()
+                .filter(|height| height.is_finite() && *height > 0.0);
+            let changed = track.size.as_deref() != Some(size.as_str()) || track.height != height;
+            track.size = Some(size);
+            track.height = height;
+            Ok(Outcome {
+                created_id: None,
+                applied: changed,
             })
         }
 

@@ -5,7 +5,7 @@
 //! and what the lanes know about a track that the document does not.
 //!
 //! The pane owns the scroll, the zoom, the tool, the snap and pan
-//! switches, and each lane's lock and height. It also knows how wide the
+//! switches, and each lane's lock. It also knows how wide the
 //! lanes are on screen, which Slint reports as they change, and from
 //! that it says which clips are worth publishing: the ones that intersect
 //! the visible window plus one screen either side, so a long cut costs
@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use crate::studio::Studio;
-use crate::ui::{TimelineTool, TrackSize};
+use crate::ui::TimelineTool;
 
 /// The closest the timeline zooms: half a millisecond a pixel.
 pub const ZOOM_IN_LIMIT: f32 = 0.000_5;
@@ -28,25 +28,12 @@ pub const ZOOM_OUT_LIMIT: f32 = 1.5;
 const ZOOM_STEP: f32 = 1.4;
 
 /// What the window knows about a lane that the document does not: whether
-/// it is locked, and how tall to draw it.
-#[derive(Clone, Copy)]
+/// it is locked. A lock is where the person was, not the cut, so it is not
+/// saved - a reopened project starts unlocked. A lane's size and height are
+/// the document's, on `Track`.
+#[derive(Clone, Copy, Default)]
 pub struct LaneView {
     pub locked: bool,
-    pub size: TrackSize,
-    /// A height set by dragging the lane's divider, or zero to take it from
-    /// `size`. Session state like the rest of this: a reopened project
-    /// starts back on Auto.
-    pub height: f32,
-}
-
-impl Default for LaneView {
-    fn default() -> Self {
-        Self {
-            locked: false,
-            size: TrackSize::Auto,
-            height: 0.0,
-        }
-    }
 }
 
 /// Everything that can happen to the view.

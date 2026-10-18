@@ -98,6 +98,50 @@ const LANE_SMALL: f32 = 44.0;
 const LANE_MIN: f32 = 40.0;
 const LANE_MAX: f32 = 240.0;
 
+/// How a lane is sized, read out of the document: the name the header's
+/// menu wrote onto the lane, so a reopened project draws the way it was
+/// left. Absent - a lane nobody has sized - and a name this build no longer
+/// knows are both automatic, which is what takes the height of the tallest
+/// thing on the lane (see `lane_height`).
+fn lane_size(lane: &Track) -> TrackSize {
+    match lane.size.as_deref() {
+        Some("small") => TrackSize::Small,
+        Some("medium") => TrackSize::Medium,
+        Some("large") => TrackSize::Large,
+        Some("custom") => TrackSize::Custom,
+        _ => TrackSize::Auto,
+    }
+}
+
+/// The height the document remembers for a lane, if it has one: what a
+/// divider dragged it to, kept on the lane so a project reopens with the
+/// layout it was left with. Only where the size says `custom`, since a
+/// preset is its own height - which is what the command writing them keeps
+/// true (see `Command::SetTrackSize`), and what a hand-edited file cannot
+/// break. A height is held to the floor and ceiling the drag itself is held
+/// to (LANE_MIN, LANE_MAX), because a document is read as well as written
+/// and hand-editing one is a thing people do - and NaN in particular would
+/// poison every clamp it met on the way through.
+fn saved_height(lane: &Track) -> Option<f32> {
+    if lane_size(lane) != TrackSize::Custom {
+        return None;
+    }
+    let height = lane.height?;
+    (height.is_finite() && height > 0.0).then(|| (height as f32).clamp(LANE_MIN, LANE_MAX))
+}
+
+/// The name a size travels by in the document - the reverse of `lane_size`,
+/// spelling it the way the menu does.
+fn size_name(size: TrackSize) -> &'static str {
+    match size {
+        TrackSize::Auto => "auto",
+        TrackSize::Small => "small",
+        TrackSize::Medium => "medium",
+        TrackSize::Large => "large",
+        TrackSize::Custom => "custom",
+    }
+}
+
 /// How long a title runs when it is placed: long enough to read, short
 /// enough that trimming it is a nudge rather than a fight.
 const LAYER_DURATION: f32 = 3.0;
@@ -379,6 +423,22 @@ pub struct MoveOrigin {
     pub row: i32,
 }
 
+/// One clip's edge at the moment a trim began.
+///
+/// The point every later event is measured from, and what a release turns
+/// back into a delta: a trim is never written as where the edge ended up,
+/// only as how far it came, because that is what survives the command's own
+/// clamping.
+pub struct TrimOrigin {
+    pub clip: String,
+    /// Seconds from the start of the timeline to the clip's head.
+    pub start: f32,
+    /// Seconds of timeline the clip covers.
+    pub duration: f32,
+    /// Seconds into the file where the clip's footage starts.
+    pub source_start: f32,
+}
+
 /// A pointer gesture in flight, previewed on the echo.
 pub enum Gesture {
     None,
@@ -391,12 +451,26 @@ pub enum Gesture {
         /// would move the very edges the next event measures against.
         lanes: Vec<f32>,
     },
+    /// An edge dragged: every selected clip's matching edge travels with
+    /// the pointer, by the same amount, as one undo step. `primary` is the
+    /// clip whose edge was grabbed — it is what snaps, and the edge the
+    /// playhead lands on when the trim follows.
     Trim {
-        clip: String,
+        primary: String,
         edge: Edge,
-        start: f32,
-        duration: f32,
-        source_start: f32,
+        origins: Vec<TrimOrigin>,
+    },
+    /// A seam dragged: the boundary between two touching clips moves, and
+    /// the tail on one side and the head on the other resize together so the
+    /// cut stays tight. A roll leaves the lane's length exactly as it was —
+    /// one clip grows by what the other gives up — so nothing else moves,
+    /// and the commands that carry it never ripple.
+    Roll {
+        /// The clip before the seam; its tail is the edge that grows or
+        /// shrinks.
+        before: TrimOrigin,
+        /// The clip after the seam; its head is the edge that moves.
+        after: TrimOrigin,
     },
     /// Dragging a transition's duration handle on the timeline.
     TransitionResize {
@@ -1950,6 +2024,57 @@ fn paste_plan(
         .collect()
 }
 
+/// Where a paste with no clip to follow lands: at `at` while the whole
+/// group fits there, and at the end of the clips on the lanes it would
+/// take when it does not.
+///
+/// The space at the playhead is only as wide as the gap it stands in, so
+/// two things send a paste to the end - the playhead standing on a clip of
+/// one of those lanes, and the group reaching the next clip on one. It
+/// moves as a whole rather than lane by lane: it keeps the shape it was
+/// copied with, so a single full lane cannot leave half the paste at the
+/// playhead and half at the end.
+///
+/// `lanes` holds each lane's clips as `(start, duration)` in lane order,
+/// which is the order `paste_plan` lands them in.
+fn paste_base(
+    held: &[Held],
+    at: f64,
+    lanes: &[Vec<(f64, f64)>],
+    locked: &dyn Fn(usize) -> bool,
+) -> f64 {
+    let plan = paste_plan(held, at, 0, lanes.len(), locked);
+    // The earliest held clip starts at `at`, so this covers the playhead
+    // standing on a clip of one of those lanes as well: that clip is the
+    // one it would be laid over.
+    let fits = plan.iter().zip(held).all(|(place, one)| {
+        let (row, start) = match place {
+            Some(place) => place,
+            // No lane to land on, so nothing to fit into.
+            None => return true,
+        };
+        !lanes.get(*row).is_some_and(|clips| {
+            clips
+                .iter()
+                .any(|&(s, d)| s < *start + one.clip.duration && *start < s + d)
+        })
+    });
+    if fits {
+        return at;
+    }
+    plan.iter()
+        .flatten()
+        .map(|&(row, _)| {
+            lanes.get(row).map_or(0.0, |clips| {
+                clips
+                    .iter()
+                    .map(|&(start, duration)| start + duration)
+                    .fold(0.0, f64::max)
+            })
+        })
+        .fold(at, f64::max)
+}
+
 /// Each rewritten link as "Old → New", the new one by its package's name.
 fn upgraded_effects(pairs: &[(String, String)]) -> Vec<String> {
     let catalogue = Catalogue::builtin();
@@ -1980,6 +2105,66 @@ fn label_of(id: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Which gesture a press asked for; see [`press_gesture`].
+enum Press {
+    /// The seam between two clips moves, and both of them resize.
+    Roll,
+    /// An edge trims, carrying every selected clip with it.
+    Trim,
+    /// The selection travels as it stands.
+    Move,
+}
+
+/// What a press on `edge` of a clip starts, once the seam beside it and the
+/// clips an edge would carry have been resolved by the caller.
+///
+/// The whole rule, in one place, because the rule is what went wrong: it
+/// used to ask how many clips were selected and answer "move" whenever the
+/// answer was more than one, so pressing an edge with a selection on screen
+/// slid the whole group instead of trimming any of it. A seam rolls, an
+/// edge trims every selected clip, and everything else moves.
+///
+/// `seam` is whether the press found a clip touching on the side it asked
+/// for, `carried` how many clips an edge would trim — every selected one
+/// when the clip under the pointer is among them, and none when it is not,
+/// which happens only for a clip on a locked lane, where Rust would refuse
+/// the commands anyway.
+fn press_gesture(edge: i32, seam: bool, carried: usize) -> Press {
+    if (3..=4).contains(&edge) && seam {
+        Press::Roll
+    } else if (0..=1).contains(&edge) && carried > 0 {
+        Press::Trim
+    } else {
+        Press::Move
+    }
+}
+
+/// How far a seam may come, from where it stood to where the pointer pulled
+/// it.
+///
+/// One clip gives up exactly what the other takes, so the whole seam is held
+/// by the shorter of the two leashes. Right, and the clip after gives up a
+/// little of itself; left, and the clip before gives up as much as it has
+/// above the floor — or the clip after as much as it has of file before its
+/// head, whichever runs out first.
+///
+/// Decided here rather than left to the two commands because each knows only
+/// its own leash: let one run out on its own and the other would still move,
+/// opening a crack in a cut that was tight when the drag began.
+fn roll_travel(
+    wanted: f64,
+    stood: f64,
+    before_duration: f64,
+    after_duration: f64,
+    after_source_start: f64,
+    after_speed: f32,
+) -> f32 {
+    let back = (before_duration - f64::from(MIN_DURATION))
+        .min(after_source_start / f64::from(after_speed.max(0.01)));
+    let on = after_duration - f64::from(MIN_DURATION);
+    (wanted - stood).clamp(-back, on) as f32
 }
 
 impl Studio {
@@ -2250,24 +2435,18 @@ impl Studio {
             .is_some_and(|view| view.locked)
     }
 
-    fn lane_size(&self, track_id: &str) -> TrackSize {
-        self.lanes
-            .lane_view
-            .get(track_id)
-            .map_or(TrackSize::Auto, |view| view.size)
-    }
-
     /// How tall one lane is drawn: a lane takes the height of the tallest
     /// thing on it, without the lanes having to be typed. An empty one takes
     /// the middle size.
     fn lane_height(&self, lane: &Track) -> f32 {
-        // A height dragged by hand wins over every rule below it.
-        if let Some(view) = self.lanes.lane_view.get(&lane.id)
-            && view.height > 0.0
-        {
-            return view.height;
+        // A height dragged by hand wins over every rule below it - and it is
+        // the document's now, the divider writing it into the lane as it
+        // goes (see `write_lane_layout`), so a reopened project draws the
+        // layout it was left with.
+        if let Some(height) = saved_height(lane) {
+            return height;
         }
-        match self.lane_size(&lane.id) {
+        match lane_size(lane) {
             TrackSize::Small => LANE_SMALL,
             TrackSize::Medium => LANE_MEDIUM,
             TrackSize::Large => LANE_LARGE,
@@ -4171,13 +4350,149 @@ impl Studio {
 
     // ── gestures ──
 
+    /// The clip that ends where `id` begins, on the same lane: the one on
+    /// the far side of the seam at its head. None when nothing touches it,
+    /// or when the nearest clip is not touching closely enough to call a
+    /// seam at all.
+    fn seam_before(&self, id: &str) -> Option<Clip> {
+        let clip = self.clip(id)?;
+        self.nearest(clip, clip.start, |other| other.start + other.duration)
+    }
+
+    /// The clip that begins where `id` ends, on the same lane: the one on
+    /// the far side of the seam at its tail.
+    fn seam_after(&self, id: &str) -> Option<Clip> {
+        let clip = self.clip(id)?;
+        self.nearest(clip, clip.start + clip.duration, |other| other.start)
+    }
+
+    /// The clip on `clip`'s lane whose `edge_of` lands closest to `at`, when
+    /// it lands within `MIN_DURATION` of it. Measured rather than looked up
+    /// by an exact match, so that two ends either side of the same point —
+    /// which is what "touching" always is, once floating point has had its
+    /// say — still read as one.
+    ///
+    /// `MIN_DURATION` is the yardstick because it is the editor's own floor
+    /// on how short a clip may be: nothing that far from `at` could be
+    /// called a seam without being visibly a gap, and two clips that close
+    /// together are exactly the ones the pointer cannot tell apart either.
+    /// The clip itself is left out by id, so the distance is only ever
+    /// judged against its neighbours.
+    fn nearest(&self, clip: &Clip, at: f64, edge_of: fn(&Clip) -> f64) -> Option<Clip> {
+        let lane = &clip.track_id;
+        self.timeline()
+            .clips
+            .iter()
+            .filter(|other| other.id != clip.id && other.track_id == *lane)
+            .min_by(|left, right| {
+                (edge_of(left) - at)
+                    .abs()
+                    .total_cmp(&(edge_of(right) - at).abs())
+            })
+            .filter(|other| (edge_of(other) - at).abs() <= MIN_DURATION as f64)
+            .map(|other| (**other).clone())
+    }
+
+    /// Every selected clip's edge as it stands, ready to be trimmed. A clip
+    /// on a locked lane is left out — Rust refuses its commands anyway, so
+    /// carrying it would only make the preview and the result disagree.
+    fn trim_origins(&self) -> Vec<TrimOrigin> {
+        self.selection
+            .iter()
+            .filter_map(|clip_id| {
+                let clip = self.clip(clip_id)?;
+                if self.locked(&clip.track_id) {
+                    return None;
+                }
+                Some(TrimOrigin {
+                    clip: clip.id.clone(),
+                    start: clip.start as f32,
+                    duration: clip.duration as f32,
+                    source_start: clip.source_start as f32,
+                })
+            })
+            .collect()
+    }
+
+    /// How far one clip's edge actually comes when the pointer drags it by
+    /// `travel`.
+    ///
+    /// A travel rather than a position, because what one clip's limits say
+    /// is only about that clip: the grabbed one may stop dead against its
+    /// neighbour while the rest keep going, or the other way round, and
+    /// neither should be able to move the other past its own wall. The
+    /// bounds are the command's own — a plain trim stops where `room_around`
+    /// says it stops, a magnetic one has the lane — so the preview cannot
+    /// land the edge somewhere the release will not leave it.
+    fn travel_within(&self, origin: &TrimOrigin, edge: Edge, travel: f32) -> f32 {
+        let speed = self
+            .clip(&origin.clip)
+            .map_or(1.0, |clip| clip.speed as f32);
+        let (floor, ceiling) = if self.prefs.magnetic {
+            (0.0, f32::INFINITY)
+        } else {
+            self.timeline()
+                .room_around(&origin.clip)
+                .map_or((0.0, f32::INFINITY), |(before, after)| {
+                    (before as f32, after as f32)
+                })
+        };
+        let (start, duration) = (origin.start, origin.duration);
+        match edge {
+            Edge::Start => {
+                // The head cannot pass the tail, and cannot pull material
+                // out of a file that has none before the in-point.
+                let limit = start + duration - MIN_DURATION;
+                (start + travel).clamp(
+                    (start - origin.source_start / speed.max(0.01))
+                        .max(floor)
+                        .min(limit),
+                    limit,
+                ) - start
+            }
+            Edge::End => {
+                // The tail cannot pass the head; past the floor it has
+                // nothing left to give.
+                let at = (start + duration + travel)
+                    .min(ceiling)
+                    .max(start + MIN_DURATION);
+                at - (start + duration)
+            }
+        }
+    }
+
     /// A press resolves the selection before anything moves, so a drag that
-    /// starts on an already-selected clip carries the whole set.
+    /// starts on an already-selected clip carries the whole set — except a
+    /// roll, which is about the cut rather than either clip and so runs
+    /// with the selection exactly as it finds it.
     pub fn clip_pressed(&mut self, id: &str, additive: bool, edge: i32) {
         let Some(clip) = self.clip(id).cloned() else {
             return;
         };
         if self.locked(&clip.track_id) {
+            return;
+        }
+        // A cut with the selected clip on the far side of it belongs to that
+        // clip, whichever edge of the cut the pointer landed on: the press
+        // is answered as if it had landed on the selected clip's own edge
+        // facing the seam - the same trim - and the selection is left
+        // standing, since the focus must not slide off the clip it is on.
+        // 5 reaches this with the far side before the press, 6 with it
+        // after, and both come only from the lanes' own hit-testing.
+        if (5..=6).contains(&edge) {
+            let far = match edge {
+                5 => self.seam_before(&clip.id).map(|before| (before.id, 1)),
+                _ => self.seam_after(&clip.id).map(|after| (after.id, 0)),
+            };
+            if let Some((far_id, far_edge)) = far
+                && self.selection.iter().any(|held| held == &far_id)
+            {
+                self.clip_pressed(&far_id, additive, far_edge);
+                return;
+            }
+            // The far side is no longer the selected one - the press falls
+            // to the clip the pointer is on, as an edge press anywhere.
+            self.clip_pressed(id, additive, if edge == 5 { 0 } else { 1 });
             return;
         }
         // Whatever the inspector still holds for the clip selected until
@@ -4199,6 +4514,43 @@ impl Studio {
             return;
         }
         self.transition_selected = None;
+        // A seam is not an edge of either clip: the drag moves the seam, and
+        // both clips resize to keep the cut tight. Which half of the seam
+        // the press landed in says which clip is read first, not which one
+        // changes — both do.
+        let seam = match edge {
+            3 => self.seam_after(&clip.id).map(|after| (clip.clone(), after)),
+            4 => self
+                .seam_before(&clip.id)
+                .map(|before| (before, clip.clone())),
+            _ => None,
+        };
+        // And the cut is about neither clip enough to take either one: a
+        // roll runs with the selection as it finds it, so using the two-way
+        // arrow never selects the two clips it moves. Decided here, before
+        // the selection resolves below — only `carried` is made of the
+        // selection, and it cannot change what the rule answers for a seam
+        // that is real.
+        if matches!(press_gesture(edge, seam.is_some(), 0), Press::Roll) {
+            let (before, after) = seam.expect("a roll only where there is a seam");
+            self.begin_echo();
+            self.gesture = Gesture::Roll {
+                before: TrimOrigin {
+                    clip: before.id.clone(),
+                    start: before.start as f32,
+                    duration: before.duration as f32,
+                    source_start: before.source_start as f32,
+                },
+                after: TrimOrigin {
+                    clip: after.id.clone(),
+                    start: after.start as f32,
+                    duration: after.duration as f32,
+                    source_start: after.source_start as f32,
+                },
+            };
+            return;
+        }
+
         let already = self.selection.iter().any(|held| held == id);
         self.selection = if additive {
             if already {
@@ -4219,15 +4571,39 @@ impl Studio {
         };
 
         self.begin_echo();
-        if edge >= 0 && self.selection.len() <= 1 {
-            self.gesture = Gesture::Trim {
-                clip: id.to_owned(),
-                edge: if edge == 0 { Edge::Start } else { Edge::End },
-                start: clip.start as f32,
-                duration: clip.duration as f32,
-                source_start: clip.source_start as f32,
-            };
-            return;
+        // What an edge would trim: every selected clip, the pressed one
+        // among them. Not built for a press that is not on an edge, since
+        // a select-all's worth of clones would buy nothing.
+        let trimmed = if (0..=1).contains(&edge) {
+            self.trim_origins()
+        } else {
+            Vec::new()
+        };
+        // How many clips this edge would carry: every selected one, when the
+        // clip under the pointer is among them, and none when it is not —
+        // which happens only for a clip on a locked lane, whose commands
+        // Rust would refuse anyway.
+        let carried = if trimmed.iter().any(|origin| origin.clip == id) {
+            trimmed.len()
+        } else {
+            0
+        };
+        // Never a roll here: a real seam rolled and returned above, so what
+        // is left is an edge that trims and everything else that moves.
+        match press_gesture(edge, false, carried) {
+            Press::Trim => {
+                self.gesture = Gesture::Trim {
+                    primary: id.to_owned(),
+                    edge: if edge == 0 { Edge::Start } else { Edge::End },
+                    origins: trimmed,
+                };
+                return;
+            }
+            // Unreachable in fact: a roll needs a seam, and a seam rolled
+            // above. Held as a move rather than a panic so that if a rule
+            // ever changes under this, a stray press moves a clip instead
+            // of taking the app down.
+            Press::Roll | Press::Move => {}
         }
         // What moves is what is selected, and nothing else. A detached
         // sound is a clip of its own: it goes where it is dragged, and its
@@ -4334,63 +4710,109 @@ impl Studio {
                 }
             }
             Gesture::Trim {
-                clip,
+                primary,
                 edge,
-                start,
-                duration,
-                source_start,
+                origins,
             } => {
-                let (id, edge) = (clip.clone(), *edge);
-                let (start, duration, source_start) = (*start, *duration, *source_start);
-                let threshold = 8.0 * self.lanes.seconds_per_pixel;
-                let speed = self.clip(&id).map_or(1.0, |clip| clip.speed as f32);
-                // A plain trim stops at the neighbours, as the command will;
-                // a magnetic one moves them, so the lane is all its room.
-                let (floor, ceiling) = if self.prefs.magnetic {
-                    (0.0, f32::INFINITY)
-                } else {
-                    self.timeline()
-                        .room_around(&id)
-                        .map_or((0.0, f32::INFINITY), |(before, after)| {
-                            (before as f32, after as f32)
-                        })
+                let (primary, edge) = (primary.clone(), *edge);
+                let Some(anchor) = origins.iter().find(|held| held.clip == primary) else {
+                    self.gesture = gesture;
+                    return;
                 };
-                if edge == Edge::Start {
-                    // The head cannot pass the tail, and cannot pull material
-                    // out of a file that has none before the in-point.
-                    let wanted = self.snapped(start + seconds, threshold, &id);
-                    let limit = start + duration - MIN_DURATION;
-                    let at = wanted.clamp(
-                        (start - source_start / speed.max(0.01))
-                            .max(floor)
-                            .min(limit),
-                        limit,
-                    );
-                    let delta = at - start;
+                // The clip grabbed decides how far every edge comes: it is
+                // the one under the pointer, so it is the one that snaps —
+                // the others are being pulled toward places the pointer is
+                // nowhere near — and its own limits cap the travel for
+                // everybody. What it may not do is cap them *for* them: a
+                // clip with no file before its head stops where it stops,
+                // without the rest of the group springing back with it.
+                let threshold = 8.0 * self.lanes.seconds_per_pixel;
+                let target = match edge {
+                    Edge::Start => self.snapped(anchor.start + seconds, threshold, &primary),
+                    Edge::End => self.snapped(
+                        anchor.start + anchor.duration + seconds,
+                        threshold,
+                        &primary,
+                    ),
+                };
+                let travel = match edge {
+                    Edge::Start => target - anchor.start,
+                    Edge::End => target - (anchor.start + anchor.duration),
+                };
+                let frame = 1.0 / self.frame_rate().max(1.0);
+                let mut follow = None;
+                for origin in origins {
+                    let id = origin.clip.clone();
+                    let speed = self.clip(&id).map_or(1.0, |clip| clip.speed as f32);
+                    let delta = self.travel_within(origin, edge, travel);
                     if let Some(clip) = self.echo_clip_mut(&id) {
-                        clip.start = f64::from(at);
-                        clip.duration = f64::from(duration - delta);
-                        clip.source_start = f64::from(source_start + delta * speed);
+                        match edge {
+                            Edge::Start => {
+                                clip.start = f64::from(origin.start + delta);
+                                clip.duration = f64::from(origin.duration - delta);
+                                clip.source_start =
+                                    f64::from((origin.source_start + delta * speed).max(0.0));
+                            }
+                            Edge::End => clip.duration = f64::from(origin.duration + delta),
+                        }
                     }
-                    // Trim follow: the playhead on the new first frame.
-                    if self.prefs.trim_follow {
-                        self.seek(at);
-                    }
-                } else {
-                    let wanted = self.snapped(start + duration + seconds, threshold, &id);
-                    let at = wanted.min(ceiling).max(start + MIN_DURATION);
-                    if let Some(clip) = self.echo_clip_mut(&id) {
-                        clip.duration = f64::from(at - start);
-                    }
-                    // Trim follow: the playhead on the new last frame, one
-                    // frame inside the edge - at the edge itself the clip
-                    // has already ended and the monitor would show what
-                    // comes after it.
-                    if self.prefs.trim_follow {
-                        let frame = 1.0 / self.frame_rate().max(1.0);
-                        self.seek((at - frame).max(start));
+                    // Trim follow lands on the clip grabbed, which is the
+                    // one the pointer is on; the others are somewhere else
+                    // entirely, and the playhead cannot sit on all of them.
+                    if self.prefs.trim_follow && id == primary {
+                        follow = Some(match edge {
+                            Edge::Start => origin.start + delta,
+                            // One frame inside the edge: at the edge itself
+                            // the clip has ended and the monitor would show
+                            // what comes after it.
+                            Edge::End => {
+                                (origin.start + origin.duration + delta - frame).max(origin.start)
+                            }
+                        });
                     }
                 }
+                if let Some(at) = follow {
+                    self.seek(at);
+                }
+            }
+            Gesture::Roll { before, after } => {
+                // The seam's own travel, snapped from where the seam stood
+                // and with both clips left out of what snaps it: a group's
+                // own edges are not places to put it, and a seam pulled
+                // back over itself would be one.
+                let threshold = 8.0 * self.lanes.seconds_per_pixel;
+                let mut moving = HashSet::new();
+                moving.insert(before.clip.clone());
+                moving.insert(after.clip.clone());
+                let stood = before.start + before.duration;
+                let wanted = self.snapped_group(f64::from(stood + seconds), threshold, &moving);
+                // How far it may go, in the one place both clips' limits are
+                // known together: one clip gives up exactly what the other
+                // takes, so the shorter leash is the whole seam's. Right,
+                // and the clip after gives up a little of itself; left, and
+                // the clip before gives up as much as it has above the
+                // floor, or as much as the clip after has of file before its
+                // head, whichever runs out first.
+                let speed = self.clip(&after.clip).map_or(1.0, |clip| clip.speed as f32);
+                let travel = roll_travel(
+                    wanted,
+                    f64::from(stood),
+                    f64::from(before.duration),
+                    f64::from(after.duration),
+                    f64::from(after.source_start),
+                    speed,
+                );
+                if let Some(clip) = self.echo_clip_mut(&before.clip) {
+                    clip.duration = f64::from(before.duration + travel);
+                }
+                if let Some(clip) = self.echo_clip_mut(&after.clip) {
+                    clip.start = f64::from(after.start + travel);
+                    clip.duration = f64::from(after.duration - travel);
+                    clip.source_start = f64::from((after.source_start + travel * speed).max(0.0));
+                }
+                // Rolling is not a trim of either clip, so the playhead
+                // stays where it is: the seam is the thing being moved, and
+                // there is no one edge to sit on.
             }
             Gesture::TransitionResize {
                 clip,
@@ -4453,41 +4875,107 @@ impl Studio {
                 }
             }
             Gesture::Trim {
-                clip,
+                primary,
                 edge,
-                start,
-                duration,
-                ..
+                origins,
             } => {
-                let after = echo.active().clip(&clip).cloned();
+                // Every delta read out of the echo before it is thrown away:
+                // the echo is the one place the clamping has already been
+                // decided, and it is the only thing the commands have to go
+                // on - a command is handed how far the edge came, never
+                // where it ended up, because where it ended up may not be
+                // where this command will leave it.
+                let deltas: Vec<(String, f64)> = origins
+                    .iter()
+                    .filter_map(|origin| {
+                        let after = echo.active().clip(&origin.clip)?;
+                        let delta = match edge {
+                            Edge::Start => after.start - f64::from(origin.start),
+                            Edge::End => after.duration - f64::from(origin.duration),
+                        };
+                        (delta.abs() > 1e-6).then_some((origin.clip.clone(), delta))
+                    })
+                    .collect();
                 self.echo = None;
-                let Some(after) = after else { return };
-                let delta = match edge {
-                    Edge::Start => after.start - f64::from(start),
-                    Edge::End => after.duration - f64::from(duration),
-                };
-                if delta.abs() > 1e-6 {
-                    let id = clip.clone();
-                    self.apply(Command::TrimClip {
-                        clip_id: clip,
+                if deltas.is_empty() {
+                    return;
+                }
+                let mut commands: Vec<Command> = deltas
+                    .iter()
+                    .map(|(clip, delta)| Command::TrimClip {
+                        clip_id: clip.clone(),
                         edge: match edge {
                             Edge::Start => TrimEdge::Start,
                             Edge::End => TrimEdge::End,
                         },
-                        delta,
+                        delta: *delta,
                         // Magnetic: the lane closes behind the edge.
                         // https://github.com/jub0t/Concat/issues/106
                         ripple: self.prefs.magnetic,
-                    });
-                    // Trim follow: a magnetic head trim slides the clip back
-                    // into the gap, and the playhead goes with its first
-                    // frame.
-                    if self.prefs.trim_follow && edge == Edge::Start {
-                        if let Some(start) = self.clip(&id).map(|clip| clip.start) {
-                            self.seek(start as f32);
-                        }
-                    }
+                    })
+                    .collect();
+                // One press, one move, one undo step: several edges trimmed
+                // together come back together. Ordering them lane by lane
+                // would only be a claim about what a magnetic ripple should
+                // do twice over, and they are issued in the order the
+                // pointer took them.
+                match commands.len() {
+                    1 => self.apply(commands.remove(0)),
+                    _ => self.apply(Command::Batch { commands }),
+                };
+                // Trim follow: a magnetic head trim slides the clip back
+                // into the gap, and the playhead goes with its first frame.
+                // The clip grabbed, not the last one the batch happened to
+                // end on - it is the one the pointer was on.
+                if self.prefs.trim_follow
+                    && edge == Edge::Start
+                    && let Some(start) = self.clip(&primary).map(|clip| clip.start)
+                {
+                    self.seek(start as f32);
                 }
+            }
+            Gesture::Roll { before, after } => {
+                // Where the seam ended up, read from the echo and then
+                // thrown away. One number, not two: two deltas worked out
+                // separately would let the two clips stop at different
+                // places and open a hairline crack in a cut that was tight
+                // when the drag began.
+                let travel = echo
+                    .active()
+                    .clip(&after.clip)
+                    .map_or(0.0, |clip| clip.start - f64::from(after.start));
+                self.echo = None;
+                if travel.abs() <= 1e-6 {
+                    return;
+                }
+                // A roll changes no lane's length: what one clip gives up,
+                // the other takes, so there is no gap behind anyone and
+                // nothing for a ripple to close. Never magnetic, whatever
+                // the lane is set to.
+                let head = Command::TrimClip {
+                    clip_id: after.clip.clone(),
+                    edge: TrimEdge::Start,
+                    delta: travel,
+                    ripple: false,
+                };
+                let tail = Command::TrimClip {
+                    clip_id: before.clip.clone(),
+                    edge: TrimEdge::End,
+                    delta: travel,
+                    ripple: false,
+                };
+                // The order matters because each clip's room is measured
+                // against where the other one has already got to. The one
+                // that has to make room goes first - the clip after when the
+                // seam moves right, the clip before when it moves left - and
+                // the other then fills the space exactly, so the two can
+                // never end up a hair apart.
+                let commands = if travel > 0.0 {
+                    vec![head, tail]
+                } else {
+                    vec![tail, head]
+                };
+                self.apply(Command::Batch { commands });
             }
             Gesture::TransitionResize {
                 clip,
@@ -6431,21 +6919,16 @@ impl Studio {
 
     /// Split at `at`: every selected clip the instant runs through, or every
     /// clip at all when nothing is selected.
-    pub fn split_at(&mut self, at: f32, only_selected: bool) {
-        let selection = self.selection.clone();
+    ///
+    /// One rule for every way of asking - key, tray button, menu. It used
+    /// to be two: a flag the keybind passed false and the tray button
+    /// passed true, so the same verb cut across every lane from the
+    /// keyboard and only the selection from the button beside it.
+    pub fn split_at(&mut self, at: f32) {
         let at = f64::from(at);
-        let victims: Vec<String> = self
-            .timeline()
-            .clips
-            .iter()
-            .filter(|clip| {
-                clip.start + f64::from(MIN_DURATION) < at
-                    && at < clip.start + clip.duration - f64::from(MIN_DURATION)
-                    && (!only_selected || selection.is_empty() || selection.contains(&clip.id))
-                    && !self.locked(&clip.track_id)
-            })
-            .map(|clip| clip.id.clone())
-            .collect();
+        let victims = Self::split_victims(self.timeline(), at, &self.selection, &|track_id| {
+            self.locked(track_id)
+        });
         if !victims.is_empty() {
             self.apply(Command::SplitClips {
                 clip_ids: victims,
@@ -6454,10 +6937,36 @@ impl Studio {
         }
     }
 
+    /// What a split at `at` cuts: each clip the instant is inside of by
+    /// enough to leave two, on no locked lane, and - while a selection
+    /// stands - only the clips in it. No selection is no scope rather than
+    /// a scope of nothing, so with nothing selected the cut runs across
+    /// every lane at that instant.
+    fn split_victims(
+        timeline: &Timeline,
+        at: f64,
+        selection: &[String],
+        locked: &dyn Fn(&str) -> bool,
+    ) -> Vec<String> {
+        timeline
+            .clips
+            .iter()
+            .filter(|clip| {
+                clip.start + f64::from(MIN_DURATION) < at
+                    && at < clip.start + clip.duration - f64::from(MIN_DURATION)
+                    && (selection.is_empty() || selection.contains(&clip.id))
+                    && !locked(&clip.track_id)
+            })
+            .map(|clip| clip.id.clone())
+            .collect()
+    }
+
     /// Q / E: the selected clip is cut at the playhead - Q drops its left
     /// up to there, E its right from there on, as one undo step. Like any
     /// trim, the lane closes behind the edge only on a magnetic timeline,
-    /// and trim follow carries the playhead to a head cut's new start.
+    /// which slides the footage out from under the playhead and leaves it
+    /// past the cut; the playhead is then carried to the edge itself - Q
+    /// to the new head, E to the new tail - where the cut now is.
     pub fn cut_to_playhead(&mut self, left: bool) {
         let Some(clip_id) = self.sole_selection() else {
             self.notify(&t("studio.selectClipTimelineFirst"), true);
@@ -6482,7 +6991,11 @@ impl Studio {
         } else {
             (TrimEdge::End, at - (clip.start + clip.duration))
         };
-        let follow = left && self.prefs.trim_follow;
+        // Where the cut leaves off. On a magnetic lane the footage has
+        // slid, so the playhead is no longer sitting on the cut: carry it
+        // to the edge - Q's new head, E's new tail. Trim follow asks a
+        // dragged edge for the same, and Q of it with no lane magnetising.
+        let follow = self.prefs.magnetic || (left && self.prefs.trim_follow);
         self.apply(Command::TrimClip {
             clip_id: clip_id.clone(),
             edge,
@@ -6490,8 +7003,15 @@ impl Studio {
             ripple: self.prefs.magnetic,
         });
         if follow {
-            if let Some(start) = self.clip(&clip_id).map(|clip| clip.start) {
-                self.seek(start as f32);
+            let landed = self.clip(&clip_id).map(|clip| {
+                if left {
+                    clip.start
+                } else {
+                    clip.start + clip.duration
+                }
+            });
+            if let Some(landed) = landed {
+                self.seek(landed as f32);
             }
         }
     }
@@ -6842,11 +7362,18 @@ impl Studio {
         }
     }
 
-    /// A copy of `source` laid right after it on its own lane, selected.
+    /// A copy of `source` laid right after it on its own lane, selected:
+    /// there when the lane is free, and in the next gap that holds it when
+    /// something already follows - a gap of the copy's own size, not of
+    /// the whole file's, which used to send it out past everything behind
+    /// the original instead of beside it.
     pub fn duplicate(&mut self, source: &Clip) {
         let end = source.start + source.duration;
         let track_id = source.track_id.clone();
-        if let Some(created) = self.place_copy(source, &track_id, end, None) {
+        let at = self
+            .timeline()
+            .nearest_free_start(&track_id, end, source.duration, &[]);
+        if let Some(created) = self.place_copy(source, &track_id, at, None) {
             self.selection = vec![created];
         }
     }
@@ -6885,13 +7412,14 @@ impl Studio {
     }
 
     /// Paste: the held clips as a group, its shape kept, as one undo step.
-    /// After `after` and on its lane - the clip a menu was opened on, or
-    /// the one selected - with the rest of the group on the rows around it
-    /// as they were copied; or, with nothing to follow, at the playhead on
-    /// the rows they were copied from. In another timeline the rows are
-    /// matched by number, which is what a paste between timelines wanted
-    /// and never got: the held lane's id was the other timeline's, and the
-    /// add was refused without a word (#290). The new clips are selected.
+    /// After `after` and on its lane - the clip a menu was opened on - with
+    /// the rest of the group on the rows around it as they were copied; or,
+    /// with nothing to follow, at the playhead on the rows they were copied
+    /// from, moving as one to the end of the clips when the playhead has no
+    /// room for all of it there. In another timeline the rows are matched
+    /// by number, which is what a paste between timelines wanted and never
+    /// got: the held lane's id was the other timeline's, and the add was
+    /// refused without a word (#290). The new clips are selected.
     pub fn paste_clips(&mut self, after: Option<&str>) {
         if self.clipboard.is_empty() {
             return;
@@ -6914,7 +7442,26 @@ impl Studio {
                     isize::try_from(row).unwrap_or(0) - isize::try_from(first_row).unwrap_or(0);
                 (anchor.start + anchor.duration, shift)
             }
-            None => (f64::from(self.playhead), 0),
+            // At the playhead, unless the group as a whole has no room
+            // there: then at the end of the clips on the lanes it takes.
+            None => {
+                let at = f64::from(self.playhead);
+                let lanes: Vec<Vec<(f64, f64)>> = tracks
+                    .iter()
+                    .map(|id| {
+                        self.timeline()
+                            .clips
+                            .iter()
+                            .filter(|clip| clip.track_id == *id)
+                            .map(|clip| (clip.start, clip.duration))
+                            .collect()
+                    })
+                    .collect();
+                let base = paste_base(&held, at, &lanes, &|row| {
+                    tracks.get(row).is_some_and(|id| self.locked(id))
+                });
+                (base, 0)
+            }
         };
         let plan = paste_plan(&held, base, shift, tracks.len(), &|row| {
             tracks.get(row).is_some_and(|id| self.locked(id))
@@ -6943,10 +7490,10 @@ impl Studio {
     /// the new clip's id. `gesture` folds the commands into one undo step
     /// with whatever else names it; `None` leaves them steps of their own.
     ///
-    /// Footage is added at normal speed, trimmed to the footage the source
-    /// covers, then retimed: the speed command keeps the footage covered
-    /// and recomputes the length, so the copy ends up the source's length
-    /// over the source's frames.
+    /// Footage is laid down covering exactly the span of the source at
+    /// normal speed, from the source's own in-point, then retimed: the
+    /// speed command keeps the footage covered and recomputes the length,
+    /// so the copy ends up the source's length over the source's frames.
     fn place_copy(
         &mut self,
         source: &Clip,
@@ -6980,38 +7527,24 @@ impl Studio {
                 },
             );
         }
+        // The in-point is set, not trimmed back into place. A copy laid
+        // out at the head of a file and trimmed to its in-point only
+        // works where the position reaches past that in-point: below it
+        // the head trim clamps at zero, leaves the copy playing the file
+        // from its start, and only the length still comes out right. A
+        // section cut from later in a file is exactly that case.
+        let covered = source.duration * source.speed;
         let created = self.apply_in(
             gesture,
-            Command::AddClip {
+            Command::AddClipSpan {
                 media_id: source.media_id.clone(),
                 track_id: track_id.to_owned(),
-                start: (start - source.source_start).max(0.0),
-                ripple: false,
+                start,
+                source_start: source.source_start,
+                duration: covered,
             },
         )?;
-        let placed = self.clip(&created).cloned()?;
         let mut commands = Vec::new();
-        let head = start - placed.start;
-        if head.abs() > 1e-6 {
-            commands.push(Command::TrimClip {
-                clip_id: created.clone(),
-                edge: TrimEdge::Start,
-                delta: head,
-                ripple: false,
-            });
-        }
-        // The footage the source covers, at normal speed.
-        let covered = source.duration * source.speed;
-        let after_head = placed.duration - head.max(0.0);
-        let tail = covered - after_head;
-        if tail.abs() > 1e-6 {
-            commands.push(Command::TrimClip {
-                clip_id: created.clone(),
-                edge: TrimEdge::End,
-                delta: tail,
-                ripple: false,
-            });
-        }
         if (source.speed - 1.0).abs() > 1e-9 {
             commands.push(Command::SetClipSpeed {
                 clip_id: created.clone(),
@@ -7868,7 +8401,7 @@ impl Studio {
                         visible: lane.visible,
                         muted: lane.muted,
                         locked: self.locked(&lane.id),
-                        size: self.lane_size(&lane.id),
+                        size: lane_size(lane),
                         height,
                         top,
                     };
@@ -7877,6 +8410,37 @@ impl Studio {
                 })
                 .collect(),
         );
+
+        // Where two clips butt up on one lane: a seam, which the lanes then
+        // draw as the one thing to grab at a cut rather than two edges an
+        // eighth of an inch apart, each claiming the same pixels. Ruled to
+        // the millisecond - two ends a hair either side of the same point
+        // are the same point - and no clip can touch itself, the shortest
+        // there is runs a sixtieth of a second. Built over the whole lane,
+        // not only what is on screen, so a seam with a clip half scrolled
+        // away still reads as one.
+        let seam = |at: f64| (at * 1000.0).round() as i64;
+        let mut tails: HashSet<(&str, i64)> = HashSet::with_capacity(timeline.clips.len());
+        let mut heads: HashSet<(&str, i64)> = HashSet::with_capacity(timeline.clips.len());
+        for clip in &timeline.clips {
+            tails.insert((clip.track_id.as_str(), seam(clip.start + clip.duration)));
+            heads.insert((clip.track_id.as_str(), seam(clip.start)));
+        }
+
+        // Which clip stands at each of those ends, so a seam can be answered
+        // as belonging to one of its two sides: when the pointer is on a cut
+        // whose far side holds the selected clip, the lanes send the press to
+        // that clip, and only the document can say which clip that is.
+        let mut tail_of: HashMap<(&str, i64), &str> = HashMap::with_capacity(timeline.clips.len());
+        let mut head_of: HashMap<(&str, i64), &str> = HashMap::with_capacity(timeline.clips.len());
+        for clip in &timeline.clips {
+            tail_of.insert(
+                (clip.track_id.as_str(), seam(clip.start + clip.duration)),
+                clip.id.as_str(),
+            );
+            head_of.insert((clip.track_id.as_str(), seam(clip.start)), clip.id.as_str());
+        }
+        let selected = |id: &str| self.selection.iter().any(|held| held.as_str() == id);
 
         // Only the clips near the view: what the lanes show plus a screen
         // either side; see `TimelinePane::published_span`.
@@ -7931,6 +8495,15 @@ impl Studio {
                         wave_span: wave.2,
                         has_audio: self.clip_has_sound(clip),
                         strip: self.strip_of(clip),
+                        join_before: tails.contains(&(clip.track_id.as_str(), seam(clip.start))),
+                        join_after: heads
+                            .contains(&(clip.track_id.as_str(), seam(clip.start + clip.duration))),
+                        join_before_selected: tail_of
+                            .get(&(clip.track_id.as_str(), seam(clip.start)))
+                            .is_some_and(|id| selected(id)),
+                        join_after_selected: head_of
+                            .get(&(clip.track_id.as_str(), seam(clip.start + clip.duration)))
+                            .is_some_and(|id| selected(id)),
                     }
                 })
                 .collect(),
@@ -10240,15 +10813,43 @@ impl Studio {
         // Custom freezes the height the lane has now; a preset clears any
         // drag, putting the lane back on the height that preset names.
         let height = if size == TrackSize::Custom {
-            self.row_track(row)
-                .map_or(LANE_MEDIUM, |track| self.lane_height(track))
-                .clamp(LANE_MIN, LANE_MAX)
+            Some(
+                self.row_track(row)
+                    .map_or(LANE_MEDIUM, |track| self.lane_height(track))
+                    .clamp(LANE_MIN, LANE_MAX),
+            )
         } else {
-            0.0
+            None
         };
-        let view = self.lanes.lane_view.entry(id).or_default();
-        view.size = size;
-        view.height = height;
+        self.write_lane_layout(&id, size, height);
+    }
+
+    /// One lane's size written into the document: the preset the menu
+    /// named, or the height a divider dragged to. A layout is view state
+    /// (see [`Command::is_view_state`]) - saved with the project so a
+    /// reopened one keeps it, and never recorded in undo - which is what
+    /// lets a divider drag write a hundred times over a gesture without
+    /// stacking a hundred steps. The republish the calling handler already
+    /// does carries it to the screen; dirty and the autosave carry it to
+    /// disk.
+    fn write_lane_layout(&mut self, track_id: &str, size: TrackSize, height: Option<f32>) {
+        let command = Command::SetTrackSize {
+            track_id: track_id.to_owned(),
+            size: size_name(size).to_owned(),
+            height: height.map(f64::from),
+        };
+        let failed = match self.session.as_mut() {
+            Some(session) => session.apply(command).err(),
+            // Nothing open to write it into, and nothing to remember it
+            // on: before the first project there is no layout either.
+            None => return,
+        };
+        if let Some(error) = failed {
+            self.notify(&error, true);
+            return;
+        }
+        self.dirty = true;
+        self.schedule_autosave();
     }
 
     /// The divider under row `row` dragged to `boundary`, measured down the
@@ -10279,10 +10880,13 @@ impl Studio {
                 set.push((track.id.clone(), below));
             }
         }
+        // Written into the document as the drag goes rather than when the
+        // pointer comes up: a layout is view state, so a move is not a step
+        // of history, and the lane the write lands on is the one the lanes
+        // republish from after each move - the number on screen and the
+        // number in the file are never apart, not even mid-drag.
         for (id, height) in set {
-            let view = self.lanes.lane_view.entry(id).or_default();
-            view.height = height;
-            view.size = TrackSize::Custom;
+            self.write_lane_layout(&id, TrackSize::Custom, Some(height));
         }
     }
 
@@ -10402,13 +11006,11 @@ impl Studio {
     pub fn shortcut(&mut self, action: &str) {
         log::info!("shortcut: {action}");
         match action {
+            // Ctrl+B: the selection, and every lane when nothing is picked -
+            // the same cut the tray button makes.
             "split" => {
                 let at = self.playhead;
-                self.split_at(at, false);
-            }
-            "split-selected" => {
-                let at = self.playhead;
-                self.split_at(at, true);
+                self.split_at(at);
             }
             // B: the razor, on and off.
             "split-tool" => {
@@ -10453,12 +11055,11 @@ impl Studio {
                 self.menu_target = None;
                 self.freeze_at_playhead();
             }
-            // After the selected clip, on its lane, as the menu does; with
-            // nothing selected, at the playhead on the rows copied from.
-            "paste" => {
-                let after = self.sole_selection();
-                self.paste_clips(after.as_deref());
-            }
+            // At the playhead on the rows copied from, moved to the end of
+            // the clips when the playhead has no room for all of it there.
+            // The clip menu's own Paste keeps meaning "after the clip it
+            // was opened on", which is the one case it is explicit about.
+            "paste" => self.paste_clips(None),
             _ => {}
         }
     }
@@ -10545,7 +11146,7 @@ impl Studio {
                 let at = self.playhead;
                 self.flush_commit();
                 self.selection = vec![id.to_owned()];
-                self.split_at(at, true);
+                self.split_at(at);
             }
             "freeze" => self.freeze_at_playhead(),
             // The menu opens the clip's Enhance in the inspector, where its
@@ -10752,6 +11353,150 @@ mod tests {
         wheel_partners, write_keyable,
     };
 
+    /// A lane's size and height are the document's now — what the header's
+    /// menu wrote and what a divider dragged — and are read back the same
+    /// way from a reopened file as from the view, holding every value to the
+    /// rules the drag itself was held to.
+    #[test]
+    fn a_lane_layout_is_read_out_of_the_document() {
+        use super::{LANE_MAX, LANE_MIN, Track, TrackSize, lane_size, saved_height};
+
+        let mut track = Track::default();
+        // Nothing written yet: automatic, and no height to prefer over the
+        // automatic rule's.
+        assert_eq!(lane_size(&track), TrackSize::Auto);
+        assert_eq!(saved_height(&track), None);
+
+        // The names the menu writes, by those same names.
+        for (name, size) in [
+            ("auto", TrackSize::Auto),
+            ("small", TrackSize::Small),
+            ("medium", TrackSize::Medium),
+            ("large", TrackSize::Large),
+            ("custom", TrackSize::Custom),
+        ] {
+            track.size = Some(name.to_owned());
+            assert_eq!(lane_size(&track), size, "the name {name}");
+        }
+        // A name no build of this one knows is automatic, which is the only
+        // answer that never leaves a lane drawing at a height nobody chose.
+        track.size = Some("sprockets".to_owned());
+        assert_eq!(lane_size(&track), TrackSize::Auto);
+
+        // A height is the drag's, held to the floor and ceiling the drag is
+        // held to — and a file read back as carefully as a drag was written.
+        track.size = Some("custom".to_owned());
+        for (height, wanted) in [
+            (96.0, Some(96.0)),
+            (1.0, Some(LANE_MIN)),
+            (4000.0, Some(LANE_MAX)),
+            (0.0, None),
+            (-40.0, None),
+            (f64::NAN, None),
+            (f64::INFINITY, None),
+        ] {
+            track.height = Some(height);
+            assert_eq!(saved_height(&track), wanted, "the height {height}");
+        }
+
+        // A preset is its own height, so one written beside it is dropped
+        // rather than honoured: size and height cannot disagree.
+        track.height = Some(96.0);
+        track.size = Some("large".to_owned());
+        assert_eq!(saved_height(&track), None);
+        assert_eq!(lane_size(&track), TrackSize::Large);
+    }
+
+    /// An edge is a trim however many clips are selected — that is what a
+    /// selection is for. The rule used to ask how many were selected and
+    /// answer "move" whenever the answer was more than one, so pressing an
+    /// edge with clips selected on several lanes slid the whole group
+    /// instead of resizing any of it.
+    #[test]
+    fn an_edge_press_trims_whatever_is_selected() {
+        use super::{Press, press_gesture};
+        // One, three, a dozen: the count never enters the rule.
+        assert!(matches!(press_gesture(0, false, 1), Press::Trim));
+        assert!(matches!(press_gesture(0, false, 3), Press::Trim));
+        assert!(matches!(press_gesture(1, false, 12), Press::Trim));
+        // Nothing an edge would trim — every candidate on a locked lane —
+        // so there is nothing to trim and the press moves instead.
+        assert!(matches!(press_gesture(1, false, 0), Press::Move));
+        // The body of a clip is not on an edge at all.
+        assert!(matches!(press_gesture(-1, false, 0), Press::Move));
+        // A seam with a clip touching rolls: it is about the two clips it
+        // joins, not about what else happens to be selected — and it stays
+        // a roll with nothing carried at all, which is what lets the press
+        // ask for it before the selection resolves and so leave both clips
+        // unselected while they move.
+        assert!(matches!(press_gesture(3, true, 1), Press::Roll));
+        assert!(matches!(press_gesture(4, true, 1), Press::Roll));
+        assert!(matches!(press_gesture(3, true, 0), Press::Roll));
+        assert!(matches!(press_gesture(4, true, 0), Press::Roll));
+        // A seam the lanes marked that the timeline has since lost — the
+        // two disagree for a frame — falls back to moving rather than
+        // rolling a pair that is not there.
+        assert!(matches!(press_gesture(3, false, 1), Press::Move));
+        // An ordinary edge near something it might have mistaken for a seam
+        // is still an edge: only 3 and 4 ask about one.
+        assert!(matches!(press_gesture(0, true, 1), Press::Trim));
+    }
+
+    /// A seam travels as far as the shorter of the two clips' leashes and
+    /// no further: past either, one clip would move while the other could
+    /// not follow, opening a hairline crack in a cut that was tight when
+    /// the drag began. Each command alone only knows its own leash, which
+    /// is why this is decided before either is issued.
+    #[test]
+    fn a_seam_only_travels_as_far_as_both_clips_can_follow() {
+        use super::roll_travel;
+        let min = f64::from(super::MIN_DURATION);
+        /// The travel, and how close counts: it comes back as an `f32` —
+        /// the pointer's own precision — so a millionth of a second is
+        /// agreeing exactly, and anything past it is a wrong rule rather
+        /// than a rounding.
+        fn near(got: f32, want: f64, case: &str) {
+            assert!(
+                (f64::from(got) - want).abs() < 1e-6,
+                "{case}: got {got}, wanted {want}"
+            );
+        }
+        // Room both ways, and the clip after has plenty of file behind its
+        // head: the seam goes exactly where the pointer put it.
+        near(
+            roll_travel(12.0, 10.0, 10.0, 10.0, 0.0, 1.0),
+            2.0,
+            "room both ways",
+        );
+        // Right, and the clip after has to give up: it keeps a minimum and
+        // not a second more, however much room the clip before has.
+        near(
+            roll_travel(30.0, 10.0, 40.0, 1.0 + min, 0.0, 1.0),
+            1.0,
+            "the clip after runs out",
+        );
+        // Left, and it is the clip before's turn to run out.
+        near(
+            roll_travel(0.0, 10.0, 1.0, 40.0, 30.0, 1.0),
+            -(1.0 - min),
+            "the clip before runs out",
+        );
+        // Left against a clip with no file before its head at all: the seam
+        // cannot come back a step, for all the room the other side has.
+        near(
+            roll_travel(0.0, 10.0, 30.0, 30.0, 0.0, 1.0),
+            0.0,
+            "no file to spend",
+        );
+        // And how much file there is counts in the clip's own speed: twice
+        // as fast, the same half second of footage covers twice the seconds.
+        near(
+            roll_travel(0.0, 10.0, 30.0, 30.0, 0.6, 2.0),
+            -0.3,
+            "at twice the speed",
+        );
+    }
+
     /// A group dragged back through the edges of the clips travelling with
     /// it is not pulled onto them: those clips move too, so their edges are
     /// not places the group can be put. Snapping to them held a select-all
@@ -10833,6 +11578,77 @@ mod tests {
                 .iter()
                 .all(Option::is_none)
         );
+    }
+
+    /// A paste stands where the playhead puts it while the group fits in
+    /// the gap the playhead stands in, and goes whole to the end of the
+    /// clips on the lanes it takes when it does not: the playhead standing
+    /// on a clip of one of them, or the group reaching the next clip on
+    /// one. One lane without room moves the lot, so the shape it was
+    /// copied with survives either way.
+    #[test]
+    fn a_paste_stands_at_the_playhead_and_goes_to_the_end_without_room() {
+        use concat_project::model::{Clip, ClipKind};
+        let held = |row: usize, start: f64, duration: f64| super::Held {
+            row,
+            clip: Clip::blank("c", "t", ClipKind::Video, "c", start, duration),
+        };
+        let none = |_: usize| false;
+        let group = [held(0, 0.0, 6.0)];
+        // Nothing on either lane: whatever the playhead says.
+        let lanes: Vec<Vec<(f64, f64)>> = vec![vec![], vec![]];
+        assert_eq!(super::paste_base(&group, 10.0, &lanes, &none), 10.0);
+        // A gap wide enough holds it where the playhead stands.
+        let lanes = vec![vec![(0.0, 6.0), (18.0, 4.0)]];
+        assert_eq!(super::paste_base(&group, 10.0, &lanes, &none), 10.0);
+        // The playhead standing on a clip sends it past the end of them.
+        assert_eq!(super::paste_base(&group, 3.0, &lanes, &none), 22.0);
+        // So does the group reaching the next clip from a clear space.
+        assert_eq!(super::paste_base(&group, 14.0, &lanes, &none), 22.0);
+        // A group goes whole: the lane with room travels with the one
+        // without it.
+        let lanes = vec![vec![], vec![(0.0, 8.0)]];
+        let group = [held(0, 0.0, 4.0), held(1, 5.0, 4.0)];
+        assert_eq!(super::paste_base(&group, 2.0, &lanes, &none), 8.0);
+    }
+
+    /// A split cuts the clips in the selection while one stands, and every
+    /// lane at that instant when none does. The keybind used to ignore the
+    /// selection and cut through all the tracks, while the tray button and
+    /// the clip menu beside it honoured it - one flag, set two ways, and
+    /// nothing in the tree noticing.
+    #[test]
+    fn a_split_cuts_the_selection_and_the_lanes_when_nothing_is_selected() {
+        use std::sync::Arc;
+
+        use concat_project::model::{Clip, ClipKind, Timeline};
+
+        let clip = |id: &str, track_id: &str| {
+            Arc::new(Clip::blank(id, track_id, ClipKind::Video, "c", 0.0, 4.0))
+        };
+        // One clip per lane, all three running through the instant asked for.
+        let timeline = Timeline {
+            clips: vec![clip("c0", "t0"), clip("c1", "t1"), clip("c2", "t2")],
+            ..Timeline::default()
+        };
+        let open: &dyn Fn(&str) -> bool = &|_| false;
+        // Nothing selected: every lane the playhead sits inside of goes.
+        assert_eq!(
+            Studio::split_victims(&timeline, 2.0, &[], open),
+            ["c0", "c1", "c2"]
+        );
+        // Something selected: only it, never the lanes beside it. This is
+        // the case the keybind used to get wrong.
+        let selection = vec!["c1".to_owned()];
+        assert_eq!(
+            Studio::split_victims(&timeline, 2.0, &selection, open),
+            ["c1"]
+        );
+        // A locked lane never goes, selected or not.
+        let locked: &dyn Fn(&str) -> bool = &|track_id| track_id == "t1";
+        assert!(Studio::split_victims(&timeline, 2.0, &selection, locked).is_empty());
+        // A playhead outside every clip cuts nothing, however much is picked.
+        assert!(Studio::split_victims(&timeline, 40.0, &[], open).is_empty());
     }
 
     /// A detach that cannot happen has a reason to give, and a picture

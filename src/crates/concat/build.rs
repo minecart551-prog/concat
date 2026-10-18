@@ -5,6 +5,21 @@
 //! the build for Settings > About.
 
 fn main() {
+    // Three trim cursors of our own rather than the OS's: `custom(image, x, y)`
+    // puts an image we draw under the pointer, which is the only way to say
+    // three different things at a clip's edges on every platform - on Windows
+    // `EResize`, `WResize` and `EwResize` are all the very same `IDC_SIZEWE`,
+    // so the arrows would collapse into one there. Slint keeps that macro
+    // behind its experimental flag until the language has enums with data, so
+    // the compiler is told to allow the features it sits on. Nothing else in
+    // the tree asks for one, and letting the flag up only lets more names
+    // resolve: what already compiles compiles the same.
+    //
+    // SAFETY: this is the build script's own thread, and the Slint compiler
+    // below runs on a thread spawned after this line, so nothing reads the
+    // environment while it is written.
+    unsafe { std::env::set_var("SLINT_ENABLE_EXPERIMENTAL_FEATURES", "1") };
+
     // Fonts and images are compiled into the binary rather than read off disk
     // at run time.
     //
@@ -36,6 +51,11 @@ fn main() {
         .join()
         .expect("the Slint compiler thread panicked")
         .expect("failed to compile ui/app.slint");
+
+    // The cursors are images the compiler embeds like any other, but they are
+    // named from a `.slint` file and not imported by it, so watching that file
+    // is not watching them: redrawing one has to run this again.
+    println!("cargo:rerun-if-changed=../../../assets/cursors");
 
     // The text presets that ship: a folder each under text-presets/, the
     // same preset.toml a user or a community preset is. Listed here into a
