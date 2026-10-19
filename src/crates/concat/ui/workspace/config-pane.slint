@@ -4,8 +4,8 @@
 import { I18n } from "../i18n.slint";
 import { Theme, SegmentedControl } from "../primitives/primitives.slint";
 import { Select } from "../primitives/select.slint";
-import { Pane, PaneBody, PaneScroll } from "pane.slint";
-import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
+import { Pane, PaneBody, PaneScroll, PaneGrip } from "pane.slint";
+import { PaneKind, PaneSwitcher, Panes } from "pane-switcher.slint";
 import { EffectData } from "../demo/effects-panel.slint";
 import {
     AdjustPanel, AppliedEntryData, AppliedParamData, AudioPanel, BackgroundRows, ProcessorRows,
@@ -140,6 +140,10 @@ export component ConfigPane inherits Rectangle {
     in property <bool> pane-removable: true;
     /// That row was used.
     callback pane-removed();
+    /// Its dropdown's reset row was used: every seat back to the
+    /// arrangement a fresh window opens with. The whole window's
+    /// business, forwarded like the rest.
+    callback pane-reset-layout();
 
     // ── the clip inspector's chains, owned by Rust ───────────────────────
     //
@@ -387,7 +391,10 @@ export component ConfigPane inherits Rectangle {
                     vertical-alignment: center;
                 }
 
-                Rectangle { horizontal-stretch: 1; }
+                PaneGrip {
+                    payload: Panes.payload(root.pane-seat, PaneKind.inspector);
+                    horizontal-stretch: 1;
+                }
 
                 VerticalLayout {
                     alignment: center;
@@ -398,6 +405,7 @@ export component ConfigPane inherits Rectangle {
                         picked(kind) => { root.pane-picked(kind); }
                         popped(kind) => { root.pane-popped(kind); }
                         removed => { root.pane-removed(); }
+                        reset-layout => { root.pane-reset-layout(); }
                     }
                 }
             }
@@ -503,7 +511,10 @@ export component ConfigPane inherits Rectangle {
                     vertical-alignment: center;
                 }
 
-                Rectangle { horizontal-stretch: 1; }
+                PaneGrip {
+                    payload: Panes.payload(root.pane-seat, PaneKind.inspector);
+                    horizontal-stretch: 1;
+                }
 
                 VerticalLayout {
                     alignment: center;
@@ -514,6 +525,7 @@ export component ConfigPane inherits Rectangle {
                         picked(kind) => { root.pane-picked(kind); }
                         popped(kind) => { root.pane-popped(kind); }
                         removed => { root.pane-removed(); }
+                        reset-layout => { root.pane-reset-layout(); }
                     }
                 }
             }
@@ -590,6 +602,7 @@ export component ConfigPane inherits Rectangle {
                         picked(kind) => { root.pane-picked(kind); }
                         popped(kind) => { root.pane-popped(kind); }
                         removed => { root.pane-removed(); }
+                        reset-layout => { root.pane-reset-layout(); }
                     }
                 }
             }

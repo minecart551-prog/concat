@@ -3,6 +3,7 @@
 
 import { Theme } from "../theme/theme.slint";
 import { ThinScrollbar } from "../primitives/scrollbar.slint";
+import { Payload } from "../util.slint";
 
 // The workspace shell: one of the four resizable regions the editor is built
 // out of, as opposed to `Panel` in primitives/, which is the floating
@@ -33,10 +34,53 @@ export component Pane inherits Rectangle {
     }
 }
 
+// The patch of a pane's header that picks the whole panel up by: press it,
+// drag onto another panel, and the two trade places — or the one landed on is
+// split in two. The same drop the corner button has always offered, from a
+// target the size of the header instead of the size of a button.
+//
+// Nothing drawn at rest: a header that wears a grip strip is a header with
+// less room in it, and the cursor is the sign. On the pointer it lifts a
+// wash, and while in the air the source fades, as a bin card or a timeline
+// tab does.
+//
+// `Payload` is spelled the same as the corner button's, so a seat cannot tell
+// the two drag sources apart — one payload vocabulary, one drop rule.
+export component PaneGrip inherits Rectangle {
+    /// The `pane:<seat>:<name>:<slug>` payload a drag from here hands the
+    /// seat it lands on. Empty is not a grip: a pane in a pop-out window has
+    /// no seats around it to trade with.
+    in property <string> payload;
+
+    border-radius: Theme.r-sm;
+    background: touch.has-hover || drag.dragging ? Theme.field-hover : Colors.transparent;
+
+    animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+
+    drag := DragArea {
+        allow-move: true;
+        data: Payload.of(root.payload);
+        drag-image: Payload.preview(root.payload);
+        drag-image-offset-x: -8;
+        drag-image-offset-y: -4;
+
+        // A TouchArea over the drag for the cursor alone: DragArea takes the
+        // press past a threshold and leaves every click it did not travel
+        // for, so nothing is lost by the one under it.
+        touch := TouchArea {
+            mouse-cursor: drag.dragging ? MouseCursor.grabbing : MouseCursor.grab;
+        }
+    }
+}
+
 // Pane title bar. `@children` are the trailing actions, the same contract
 // PanelHeader uses.
 export component PaneHeader inherits Rectangle {
     in property <string> title;
+    /// The payload a drag from this header's empty stretch carries, from
+    /// `Panes.payload(seat, kind)`. Empty leaves the stretch plain — which
+    /// is what a bare pane wants, having no seat around it to trade with.
+    in property <string> grip-payload: "";
 
     // 52px, which is the library pane's tab strip — the tallest of the three
     // top bars, because that one has a row of chips in it and the other two
@@ -67,7 +111,14 @@ export component PaneHeader inherits Rectangle {
             vertical-alignment: center;
         }
 
-        Rectangle { horizontal-stretch: 1; }
+        // The stretch, and the grip when there is one: the same box, which
+        // is the point — the emptiest part of the header is the part nobody
+        // needs, and so the part a panel is best picked up by.
+        if root.grip-payload == "": Rectangle { horizontal-stretch: 1; }
+        if root.grip-payload != "": PaneGrip {
+            payload: root.grip-payload;
+            horizontal-stretch: 1;
+        }
 
         HorizontalLayout {
             spacing: 2px;

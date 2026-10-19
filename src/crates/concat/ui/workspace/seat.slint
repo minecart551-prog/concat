@@ -37,6 +37,10 @@ export component Seat inherits Rectangle {
     callback popped(kind: PaneKind);
     /// The bottom row of its dropdown was used: close this seat.
     callback removed();
+    /// Its dropdown's reset row was used: the whole arrangement back to
+    /// what a fresh window opens with — one row asks for it, the whole
+    /// window is what answers.
+    callback reset();
 
     /// A panel was dropped here from another seat, on this part of it.
     callback dropped-on(from: int, side: DockSide);
@@ -96,6 +100,7 @@ export component Seat inherits Rectangle {
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
+            pane-reset-layout => { root.reset(); }
 
             items: Editor.media;
             count-all: Editor.media-count-all;
@@ -168,6 +173,7 @@ export component Seat inherits Rectangle {
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
+            pane-reset-layout => { root.reset(); }
 
             output-width: Editor.output-width;
             output-height: Editor.output-height;
@@ -233,6 +239,7 @@ export component Seat inherits Rectangle {
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
+            pane-reset-layout => { root.reset(); }
 
             video-effects: Editor.video-effects;
             audio-effects: Editor.audio-effects;
@@ -355,6 +362,7 @@ export component Seat inherits Rectangle {
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
+            pane-reset-layout => { root.reset(); }
 
             selected: Editor.selected-clip;
             clip-set(field, value) => { Editor.clip-set(field, value); }
@@ -373,6 +381,7 @@ export component Seat inherits Rectangle {
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
+            pane-reset-layout => { root.reset(); }
 
             tabs: Editor.timeline-tabs;
             current-tab: Editor.timeline-current-tab;

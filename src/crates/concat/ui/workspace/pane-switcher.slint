@@ -74,6 +74,13 @@ export global Panes {
             : "timeline";
     }
 
+    /// What a drag from seat `seat` carrying `kind` hands the seat it lands
+    /// on. One builder for every drag source — the corner button and the
+    /// header grips both — so a payload cannot drift between them.
+    public pure function payload(seat: int, kind: PaneKind) -> string {
+        return "pane:\{seat}:\{label(kind)}:\{id(kind)}";
+    }
+
     /// The mark a view is known by, and the one the corner button wears.
     /// Chosen to be tellable apart at 13px rather than to be the most literal
     /// picture of each: a strip of film, a still frame, the inspector's own
@@ -266,6 +273,56 @@ component PopOutRow inherits Rectangle {
     }
 }
 
+// "Reset layout". The same neutral strip as the pop-out row, carrying the
+// mark every panel already means by "put it back": not a change to what this
+// pane shows but to where everything is — every seat back to the arrangement
+// a fresh window opens with. One click, no undo, and no confirmation either:
+// the arrangement is a preference, not project state, and a person who wants
+// it back has only to stop moving panels.
+component ResetRow inherits Rectangle {
+    callback chosen();
+
+    height: 26px;
+
+    Rectangle {
+        x: 4px;
+        y: 0;
+        width: parent.width - 8px;
+        height: parent.height;
+        border-radius: Theme.r-sm;
+        background: touch.has-hover ? Theme.field-hover : Colors.transparent;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 8px;
+
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    glyph: Glyph.reset;
+                    size: 13px;
+                    tint: touch.has-hover ? Theme.fg : Theme.fg-muted;
+                }
+            }
+
+            Text {
+                horizontal-stretch: 1;
+                text: I18n.t("paneSwitcher.resetLayout");
+                color: touch.has-hover ? Theme.fg : Theme.fg-muted;
+                font-size: Theme.fs;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.chosen(); }
+        }
+    }
+}
+
 // The button in a pane's top-right corner: the mark of what this pane is
 // currently showing, and the three ways to use it.
 //
@@ -295,21 +352,27 @@ export component PaneSwitcher inherits Rectangle {
     callback popped(kind: PaneKind);
     /// The bottom row of the list was used: close this panel.
     callback removed();
+    /// The reset row was used: every seat back to the arrangement a fresh
+    /// window opens with. The workspace's, not this pane's — hence the
+    /// long walk down, like every other row here.
+    callback reset-layout();
 
     /// `pane:<seat>:<name>:<slug>` — the seat for the drop, the name for the
-    /// chip under the cursor, and the slug for the mark on it.
-    property <string> payload:
-        "pane:\{root.seat}:\{Panes.label(root.kind)}:\{Panes.id(root.kind)}";
+    /// chip under the cursor, and the slug for the mark on it. Built by the
+    /// one builder every drag source uses, so a header grip and this button
+    /// hand the seat identical payloads.
+    property <string> payload: Panes.payload(root.seat, root.kind);
 
     property <length> menu-w: 168px;
     /// Five view rows, then the row that pops the view out, then the rule and
-    /// the row that removes the panel, then the surface's own padding. Summed
-    /// here because a PopupWindow is sized by whoever places it — the same
-    /// rule the context menu follows, and the same reason: a layout cannot
-    /// report its height back up before it has somewhere to be laid out. When
-    /// the Keyframes row arrived this still said four, and the row that
-    /// removes the panel was the one under the clip.
-    property <length> list-h: 6 * 26px + 9px + 26px + 8px;
+    /// the two rows that put the arrangement back and remove the panel, then
+    /// the surface's own padding. Summed here because a PopupWindow is sized
+    /// by whoever places it — the same rule the context menu follows, and the
+    /// same reason: a layout cannot report its height back up before it has
+    /// somewhere to be laid out. When the Keyframes row arrived this still
+    /// said four, and the row that removes the panel was the one under the
+    /// clip.
+    property <length> list-h: 6 * 26px + 9px + 2 * 26px + 8px;
     /// The whole list when the window has room for it under the button, and
     /// the room otherwise, with the rest reached by scrolling. Never under
     /// three rows: shorter than that is not a list worth scrolling, and
@@ -340,6 +403,9 @@ export component PaneSwitcher inherits Rectangle {
         chip := Rectangle {
             width: parent.width;
             height: parent.height;
+            // Faded while in the air, as a bin card and a timeline tab are:
+            // what is being moved is not where it lives.
+            opacity: drag.dragging ? 0.45 : 1.0;
             // The radius every other input in the window carries — a number
             // field, a dialog button, a text field. This wore the chip radius,
             // which is for marks *inside* a control (the fx badge on a clip, a
@@ -383,7 +449,10 @@ export component PaneSwitcher inherits Rectangle {
             }
 
             touch := TouchArea {
-                mouse-cursor: pointer;
+                // Grab, not pointer, and fist while in the air: this button
+                // is a drag handle as much as a picker, and the cursor is
+                // half of what says so — the tooltip the other half.
+                mouse-cursor: drag.dragging ? MouseCursor.grabbing : MouseCursor.grab;
                 clicked => { menu.show(); }
             }
 
@@ -460,6 +529,10 @@ export component PaneSwitcher inherits Rectangle {
                     }
 
                     SwitchDivider { }
+
+                    ResetRow {
+                        chosen => { menu.close(); root.reset-layout(); }
+                    }
 
                     RemoveRow {
                         enabled: root.removable;

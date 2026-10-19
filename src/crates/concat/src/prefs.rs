@@ -121,6 +121,13 @@ pub struct Preferences {
     /// by Settings › Shortcuts; resolved in [`crate::keymap`].
     #[serde(default)]
     pub keybinds: BTreeMap<String, String>,
+    /// The workspace's arrangement between runs: which views sit side by
+    /// side, and at what share. Absent — or a tree the app cannot make
+    /// sense of — is the arrangement every fresh window opens with; the
+    /// file holds what moved, not the whole layout. The compact dock a
+    /// narrow window swaps to is not remembered here: it is not a layout
+    /// anyone arranges.
+    pub dock: Option<crate::dock::SavedDock>,
 }
 
 /// The voiceover panel's choices, kept from one take to the next and one

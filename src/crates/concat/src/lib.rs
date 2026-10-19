@@ -92,7 +92,7 @@ mod wayland_drop {
     }
 }
 
-use dock::{Dock, SEAT_MIN_GRAB, SEAT_MIN_H, SEAT_MIN_W};
+use dock::{Dock, SEAT_MIN_GRAB, SEAT_MIN_H, SEAT_MIN_W, default_dock};
 use host::{Host, Shell};
 use panes::Msg;
 use panes::captions::CaptionsMsg;
@@ -498,6 +498,7 @@ fn wire(app: &App, shell: &Shell) {
         if let Dock::Leaf(held) = state.dock.at_mut(&path) {
             *held = kind;
         }
+        state.remember_dock();
     }));
     editor.on_dock_dropped(on_dock!(|state, from: i32, onto: i32, side: DockSide| {
         let (from, onto) = (from.max(0) as usize, onto.max(0) as usize);
@@ -517,6 +518,7 @@ fn wire(app: &App, shell: &Shell) {
                     *held = kind;
                 }
             }
+            state.remember_dock();
             return;
         }
         let (Some(onto_path), Some(from_path)) =
@@ -526,6 +528,7 @@ fn wire(app: &App, shell: &Shell) {
         };
         state.dock.split_leaf(&onto_path, taken, side);
         state.dock.remove_leaf(&from_path);
+        state.remember_dock();
     }));
     editor.on_dock_add(on_dock!(|state, kind: PaneKind| {
         let seats = state.dock_layout().seats;
@@ -546,12 +549,22 @@ fn wire(app: &App, shell: &Shell) {
             return;
         };
         state.dock.split_leaf(&path, kind, side);
+        state.remember_dock();
     }));
     editor.on_dock_remove(on_dock!(|state, seat: i32| {
         let Some(path) = state.dock.leaf_path(seat.max(0) as usize) else {
             return;
         };
         state.dock.remove_leaf(&path);
+        state.remember_dock();
+    }));
+    // The dropdown's reset row: the arrangement every fresh window opens
+    // with, and nothing remembered after it — so a future change to the
+    // default is a change this window gets too.
+    editor.on_dock_reset(on_dock!(|state| {
+        state.dock = default_dock();
+        state.prefs.dock = None;
+        state.prefs.save(&state.host.dirs);
     }));
     editor.on_divider_pressed(on_dock!(|state, index: i32| {
         let index = index.max(0) as usize;
@@ -580,6 +593,11 @@ fn wire(app: &App, shell: &Shell) {
             SEAT_MIN_GRAB.min(extent / 2.0)
         } / extent;
         *ratio = (from + delta / extent).clamp(floor, 1.0 - floor);
+    }));
+    // The gutter let go: the drag arrived, and its share is written down —
+    // once, at the end, rather than on every step of the way.
+    editor.on_divider_released(on_dock!(|state, _index: i32| {
+        state.remember_dock();
     }));
 
     // ── the bin ──

@@ -10,7 +10,7 @@ import { Tip } from "../primitives/tooltip.slint";
 import { NumberField } from "../primitives/number-field.slint";
 import { Select } from "../primitives/select.slint";
 import { Pane, PaneHeader } from "pane.slint";
-import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
+import { PaneKind, PaneSwitcher, Panes } from "pane-switcher.slint";
 import { ClipKind, StageGuideData, StageItemData } from "../timeline/model.slint";
 import { ContextMenu, MenuMetrics, MenuRow } from "../primitives/context-menu.slint";
 
@@ -794,6 +794,10 @@ export component PreviewPane inherits Rectangle {
     in property <bool> pane-removable: true;
     /// That row was used.
     callback pane-removed();
+    /// Its dropdown's reset row was used: every seat back to the
+    /// arrangement a fresh window opens with. The whole window's
+    /// business, forwarded like the rest.
+    callback pane-reset-layout();
 
     /// The stage alone: no header over it and no transport under it. The
     /// phone's monitor, which has a transport of its own on the row below
@@ -828,6 +832,9 @@ export component PreviewPane inherits Rectangle {
     Pane {
         if !root.bare: PaneHeader {
             title: I18n.t("common.preview");
+            // The empty stretch, as a place to pick the panel up from. Bare —
+            // a pop-out — has no header at all, and no seats to trade with.
+            grip-payload: Panes.payload(root.pane-seat, PaneKind.preview);
 
             // The output, stated rather than implied. Tabular-ish and dim: it
             // is a fact about the project, not a control.
@@ -851,6 +858,7 @@ export component PreviewPane inherits Rectangle {
                     picked(kind) => { root.pane-picked(kind); }
                     popped(kind) => { root.pane-popped(kind); }
                     removed => { root.pane-removed(); }
+                    reset-layout => { root.pane-reset-layout(); }
                 }
             }
         }

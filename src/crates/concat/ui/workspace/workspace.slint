@@ -48,6 +48,7 @@ export component Workspace inherits Rectangle {
         popped(kind) => { Editor.pane-popped(kind); }
         dropped-on(from, side) => { Editor.dock-dropped(from, seat.index, side); }
         removed => { Editor.dock-remove(seat.index); }
+        reset => { Editor.dock-reset(); }
     }
 
     // Declared after the seats so a gutter is hit before the panes either side
@@ -66,6 +67,7 @@ export component Workspace inherits Rectangle {
 
             pressed => { Editor.divider-pressed(divider.index); }
             moved(delta) => { Editor.divider-dragged(divider.index, delta); }
+            released => { Editor.divider-released(divider.index); }
         }
 
         if !divider.columns: RowSplitter {
@@ -74,6 +76,7 @@ export component Workspace inherits Rectangle {
 
             pressed => { Editor.divider-pressed(divider.index); }
             moved(delta) => { Editor.divider-dragged(divider.index, delta); }
+            released => { Editor.divider-released(divider.index); }
         }
     }
 }

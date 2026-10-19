@@ -2456,6 +2456,14 @@ impl Studio {
         let languages = i18n::languages(&host.dirs);
         let recents = projects::recents(&host.dirs.config);
         let text_presets = presets::all(&host.dirs);
+        // The remembered arrangement, taken before `prefs` is moved into the
+        // struct below: absent or unreadable is the arrangement every fresh
+        // window opens with, and a file the app cannot make sense of is that
+        // too — see `SavedDock::to_dock`.
+        let dock = prefs
+            .dock
+            .clone()
+            .map_or_else(default_dock, |saved| saved.to_dock());
         let mut studio = Self {
             prefs,
             library: Default::default(),
@@ -2505,7 +2513,7 @@ impl Studio {
             posters_pending: HashSet::new(),
             lengths: HashMap::new(),
             project_name: "Untitled project".into(),
-            dock: default_dock(),
+            dock,
             dock_aside: crate::dock::compact_dock(),
             compact: false,
             workspace: (0.0, 0.0),
@@ -9373,6 +9381,21 @@ impl Studio {
         // A timeline put back while something plays brings its meters
         // with it; one taken away stops them at their next tick.
         self.wake_meters();
+    }
+
+    /// The arrangement, written down. Whichever dock the window is showing
+    /// is not the one that counts while the window is squeezed: a phone's
+    /// compact arrangement is not something anyone arranges, so while it is
+    /// up the parked wide one is what gets remembered — a narrow stretch of
+    /// a launch cannot overwrite the layout the desktop comes back to.
+    pub fn remember_dock(&mut self) {
+        let shown = if self.compact {
+            &self.dock_aside
+        } else {
+            &self.dock
+        };
+        self.prefs.dock = Some(shown.as_saved());
+        self.prefs.save(&self.host.dirs);
     }
 
     /// The window is a phone's: the lanes keep the playhead at their middle

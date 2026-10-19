@@ -3,7 +3,7 @@
 
 import { Theme } from "../theme/theme.slint";
 import { Pane } from "pane.slint";
-import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
+import { PaneKind, PaneSwitcher, Panes } from "pane-switcher.slint";
 import { I18n } from "../i18n.slint";
 import { Glyph } from "../icons.slint";
 import { ContextMenu, MenuItemData, MenuMetrics, MenuRow } from "../primitives/context-menu.slint";
@@ -143,6 +143,10 @@ export component TimelinePane inherits Rectangle {
     in property <bool> pane-removable: true;
     /// That row was used.
     callback pane-removed();
+    /// Its dropdown's reset row was used: every seat back to the
+    /// arrangement a fresh window opens with. The whole window's
+    /// business, forwarded like the rest.
+    callback pane-reset-layout();
 
     /// Wide enough for what the column actually carries, and no wider: every
     /// pixel here is a pixel the lanes do not get.
@@ -303,6 +307,9 @@ export component TimelinePane inherits Rectangle {
         TimelineTabs {
             tabs: root.tabs;
             current: root.current-tab;
+            // The strip's trailing gap, as a place to pick the panel up
+            // from — beside the corner button, which drags the same way.
+            grip-payload: Panes.payload(root.pane-seat, PaneKind.timeline);
 
             selected(index) => { root.tab-selected(index); }
             renamed(index, name) => { root.tab-renamed(index, name); }
@@ -317,6 +324,7 @@ export component TimelinePane inherits Rectangle {
                 picked(kind) => { root.pane-picked(kind); }
                 popped(kind) => { root.pane-popped(kind); }
                 removed => { root.pane-removed(); }
+                reset-layout => { root.pane-reset-layout(); }
             }
         }
 

@@ -25,6 +25,9 @@ import { Theme } from "../theme/theme.slint";
 export component ColSplitter inherits Rectangle {
     callback pressed();
     callback moved(delta: length);
+    /// The drag ended — wherever the pointer let go. The one who asked for
+    /// the moves writes the new share down here, once.
+    callback released();
 
     property <length> origin;
 
@@ -54,6 +57,11 @@ export component ColSplitter inherits Rectangle {
                 root.origin = self.absolute-position.x + self.mouse-x;
                 root.pressed();
             }
+            // Also on a release outside the window: the press keeps the grab,
+            // so the up lands here wherever the pointer went.
+            if (event.kind == PointerEventKind.up) {
+                root.released();
+            }
         }
         moved => {
             root.moved(self.absolute-position.x + self.mouse-x - root.origin);
@@ -64,6 +72,8 @@ export component ColSplitter inherits Rectangle {
 export component RowSplitter inherits Rectangle {
     callback pressed();
     callback moved(delta: length);
+    /// The drag ended — see `ColSplitter::released`.
+    callback released();
 
     property <length> origin;
 
@@ -88,6 +98,9 @@ export component RowSplitter inherits Rectangle {
             if (event.kind == PointerEventKind.down) {
                 root.origin = self.absolute-position.y + self.mouse-y;
                 root.pressed();
+            }
+            if (event.kind == PointerEventKind.up) {
+                root.released();
             }
         }
         moved => {

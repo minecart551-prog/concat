@@ -1794,6 +1794,10 @@ export component MediaPane inherits Rectangle {
     in property <bool> pane-removable: true;
     /// That row was used.
     callback pane-removed();
+    /// Its dropdown's reset row was used: every seat back to the
+    /// arrangement a fresh window opens with. The whole window's
+    /// business, forwarded like the rest.
+    callback pane-reset-layout();
 
     property <int> tab;
     /// The Audio page is up, or not: a drop of sound files on the window
@@ -2019,6 +2023,7 @@ export component MediaPane inherits Rectangle {
                         picked(kind) => { root.pane-picked(kind); }
                         popped(kind) => { root.pane-popped(kind); }
                         removed => { root.pane-removed(); }
+                        reset-layout => { root.pane-reset-layout(); }
                     }
                 }
             }

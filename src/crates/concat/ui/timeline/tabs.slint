@@ -4,6 +4,7 @@
 import { Theme } from "../theme/theme.slint";
 import { Focus, Payload } from "../util.slint";
 import { Glyph, Icon } from "../icons.slint";
+import { PaneGrip } from "../workspace/pane.slint";
 import { TimelineTabData } from "model.slint";
 
 // The timeline tabs, one per timeline in the project — sequences, in the
@@ -175,6 +176,10 @@ component Tab inherits Rectangle {
 export component TimelineTabs inherits Rectangle {
     in property <[TimelineTabData]> tabs;
     in property <int> current;
+    /// The payload a drag from the strip's trailing gap carries — the pane
+    /// picked up by the patch of strip between the last tab and the corner
+    /// button. Empty is no grip; the strip has no gap to spare otherwise.
+    in property <string> grip-payload: "";
 
     callback selected(index: int);
     callback renamed(index: int, name: string);
@@ -306,6 +311,17 @@ export component TimelineTabs inherits Rectangle {
     HorizontalLayout {
         alignment: end;
         padding-right: 8px;
+        spacing: 4px;
+
+        // The patch of strip between the last tab and the corner button, as
+        // a second place to pick the pane up from. Fixed width rather than a
+        // stretch: this layer shares its row with the tabs, which have
+        // widths of their own, and the gap they leave is the gap this gets.
+        if root.grip-payload != "": PaneGrip {
+            payload: root.grip-payload;
+            width: 18px;
+            height: 22px;
+        }
 
         VerticalLayout {
             alignment: center;

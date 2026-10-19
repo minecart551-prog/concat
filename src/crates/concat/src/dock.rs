@@ -4,6 +4,8 @@
 //! The workspace's arrangement: a tree of splits and views, walked flat
 //! for Slint, which has no recursion.
 
+use serde::{Deserialize, Serialize};
+
 use crate::ui::{DockDivider, DockSide, PaneKind, SeatBox};
 
 pub const SEAT_MIN_W: f32 = 240.0;
@@ -183,6 +185,116 @@ impl Dock {
         };
         *parent = survivor;
     }
+
+    /// The arrangement as it is remembered: the same tree, in the names the
+    /// settings file can hold. See [`SavedDock`].
+    pub fn as_saved(&self) -> SavedDock {
+        match self {
+            Dock::Leaf(kind) => SavedDock::Leaf {
+                pane: slug(*kind).to_owned(),
+            },
+            Dock::Split {
+                columns,
+                ratio,
+                first,
+                second,
+            } => SavedDock::Split {
+                columns: *columns,
+                ratio: *ratio,
+                first: Box::new(first.as_saved()),
+                second: Box::new(second.as_saved()),
+            },
+        }
+    }
+}
+
+/// The arrangement, as the settings file remembers it between runs: the same
+/// tree as [`Dock`], in a form serde can write and a person can read. A leaf
+/// names its view by the same slug the drag payloads use ("media",
+/// "timeline", ...), so the file and what a drop says speak one vocabulary.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SavedDock {
+    Leaf {
+        pane: String,
+    },
+    Split {
+        columns: bool,
+        ratio: f32,
+        first: Box<SavedDock>,
+        second: Box<SavedDock>,
+    },
+}
+
+/// How many levels a remembered arrangement may have, from the window's
+/// corner down to a view. The editor's own is four; anything past this is a
+/// file written by hand or by a bug, and what lies beyond the cut becomes the
+/// library rather than being trusted to lay out — a walk that recurses
+/// forever is a crash, not a layout.
+const MAX_SAVED_DEPTH: usize = 8;
+/// The share a remembered split's halves may fall to. The window's own
+/// dividers hold a floor of their own while they are dragged (see the seat
+/// minimums); this is the same idea for a file nobody clamped.
+const MIN_SAVED_RATIO: f32 = 0.1;
+
+impl SavedDock {
+    /// The arrangement this remembers, with a hand-edited file's excesses
+    /// taken off: a ratio pushed to either end, a view the app does not have
+    /// (any more), a tree deeper than the window could draw. A settings file
+    /// is only ever as trustworthy as the last hand that had it, and the
+    /// rule everywhere else in prefs is that a bad value is the default and
+    /// never an error.
+    pub fn to_dock(&self) -> Dock {
+        self.to_dock_at(0)
+    }
+
+    fn to_dock_at(&self, depth: usize) -> Dock {
+        // `depth` counts the splits above this node; the node itself is a
+        // level too, which is the one the cap is a count of.
+        if depth + 1 >= MAX_SAVED_DEPTH {
+            return Dock::Leaf(PaneKind::Media);
+        }
+        match self {
+            SavedDock::Leaf { pane } => Dock::Leaf(kind_of(pane)),
+            SavedDock::Split {
+                columns,
+                ratio,
+                first,
+                second,
+            } => Dock::Split {
+                columns: *columns,
+                ratio: ratio.clamp(MIN_SAVED_RATIO, 1.0 - MIN_SAVED_RATIO),
+                first: Box::new(first.to_dock_at(depth + 1)),
+                second: Box::new(second.to_dock_at(depth + 1)),
+            },
+        }
+    }
+}
+
+/// The name a view goes by in a saved arrangement — and in a drag payload,
+/// which is where the vocabulary comes from: `Panes.id` in pane-switcher.slint
+/// writes the same five words.
+fn slug(kind: PaneKind) -> &'static str {
+    match kind {
+        PaneKind::Media => "media",
+        PaneKind::Preview => "preview",
+        PaneKind::Inspector => "inspector",
+        PaneKind::Keyframes => "keyframes",
+        PaneKind::Timeline => "timeline",
+    }
+}
+
+/// The view a saved name asks for. A name this app does not know — one left
+/// behind by a version that had another view, say — is the library: the seat
+/// that can always show something, and the one the default layout starts with.
+fn kind_of(name: &str) -> PaneKind {
+    match name {
+        "preview" => PaneKind::Preview,
+        "inspector" => PaneKind::Inspector,
+        "keyframes" => PaneKind::Keyframes,
+        "timeline" => PaneKind::Timeline,
+        _ => PaneKind::Media,
+    }
 }
 
 /// The tree walked flat: a box per view, a box per gutter.
@@ -329,4 +441,112 @@ pub fn nearest_row(heights: &[f32], y: f32) -> i32 {
         top += height;
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The arrangement the editor opens with survives the settings file —
+    /// out through serde and back in as the same tree.
+    #[test]
+    fn an_arrangement_comes_back_from_the_file_as_it_was() {
+        let original = default_dock();
+        let written = serde_json::to_string(&original.as_saved()).expect("encodes");
+        let read: SavedDock = serde_json::from_str(&written).expect("decodes");
+        let back = read.to_dock();
+
+        // Same shape, said with the thing the file said: re-encoding the
+        // round-tripped tree gives the same text.
+        assert_eq!(
+            serde_json::to_string(&back.as_saved()).expect("encodes"),
+            written
+        );
+        // And the views are where they were.
+        for kind in [
+            PaneKind::Media,
+            PaneKind::Preview,
+            PaneKind::Timeline,
+            PaneKind::Inspector,
+        ] {
+            assert!(back.contains(kind), "{kind:?} survived");
+        }
+    }
+
+    /// A ratio a hand pushed past either end is pulled back to a share both
+    /// halves can be used at, rather than trusted to leave a seat nothing.
+    #[test]
+    fn a_ratio_the_file_pushed_too_far_is_pulled_back_in() {
+        let saved = SavedDock::Split {
+            columns: true,
+            ratio: 9.0,
+            first: Box::new(SavedDock::Leaf {
+                pane: "timeline".to_owned(),
+            }),
+            second: Box::new(SavedDock::Leaf {
+                pane: "media".to_owned(),
+            }),
+        };
+        let Dock::Split { ratio, .. } = saved.to_dock() else {
+            panic!("still a split");
+        };
+        assert_eq!(ratio, 1.0 - MIN_SAVED_RATIO);
+
+        let saved = SavedDock::Split {
+            columns: true,
+            ratio: -3.0,
+            first: Box::new(SavedDock::Leaf {
+                pane: "timeline".to_owned(),
+            }),
+            second: Box::new(SavedDock::Leaf {
+                pane: "media".to_owned(),
+            }),
+        };
+        let Dock::Split { ratio, .. } = saved.to_dock() else {
+            panic!("still a split");
+        };
+        assert_eq!(ratio, MIN_SAVED_RATIO);
+    }
+
+    /// A view the app does not have — one left behind by a version that had
+    /// another — comes up as the library, which can always show something.
+    #[test]
+    fn a_view_the_app_does_not_have_is_the_library() {
+        let saved = SavedDock::Leaf {
+            pane: "scopes".to_owned(),
+        };
+        assert!(matches!(saved.to_dock(), Dock::Leaf(PaneKind::Media)));
+    }
+
+    /// A tree deeper than the window could draw is cut down at the depth,
+    /// and what is left still lays out: the file does not get the last word.
+    #[test]
+    fn a_tree_too_deep_for_the_window_is_cut_down_to_the_depth() {
+        let mut saved = SavedDock::Leaf {
+            pane: "timeline".to_owned(),
+        };
+        for _ in 0..40 {
+            saved = SavedDock::Split {
+                columns: true,
+                ratio: 0.5,
+                first: Box::new(saved),
+                second: Box::new(SavedDock::Leaf {
+                    pane: "media".to_owned(),
+                }),
+            };
+        }
+        let dock = saved.to_dock();
+        // Cut at the depth: the tree is at most MAX_SAVED_DEPTH deep, which
+        // is short of the forty the file asked for.
+        fn depth(node: &Dock) -> usize {
+            match node {
+                Dock::Leaf(_) => 1,
+                Dock::Split { first, second, .. } => 1 + depth(first).max(depth(second)),
+            }
+        }
+        assert!(depth(&dock) <= MAX_SAVED_DEPTH);
+        let mut out = DockLayout::default();
+        lay_out(&dock, (0.0, 0.0, 1920.0, 1080.0), &mut out);
+        assert!(!out.seats.is_empty());
+    }
 }

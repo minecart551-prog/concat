@@ -60,6 +60,9 @@ export global Editor {
     /// A panel was dragged from one seat and dropped on another. The middle
     /// trades the two; an edge splits the seat it landed on.
     callback dock-dropped(from: int, onto: int, side: DockSide);
+    /// A seat's dropdown reset row was used: every seat back to the
+    /// arrangement a fresh window opens with.
+    callback dock-reset();
     /// A seat's pop-out row was used: the view it is showing opens in a
     /// window of its own — a second copy of it, the way a second seat
     /// would be, with the window wherever the OS puts it. See popout.rs.
@@ -68,8 +71,11 @@ export global Editor {
     /// A gutter went down, and then moved. Two callbacks rather than one
     /// absolute position, because the ratio a drag is adjusting is the one it
     /// started from — see the pane splitters, which have the same shape.
+    /// The release is its own event for a different reason: it is the moment
+    /// the new share is written down.
     callback divider-pressed(index: int);
     callback divider-dragged(index: int, delta: length);
+    callback divider-released(index: int);
 
     // ── the library ──
     in-out property <[MediaItemData]> media;
