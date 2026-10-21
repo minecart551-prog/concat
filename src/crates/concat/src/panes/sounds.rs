@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
 
 //! The library's Audio page (#60): the user's own sounds, kept across
 //! projects.
@@ -488,7 +488,7 @@ impl Studio {
             .iter()
             .enumerate()
             .map(|(row, style)| {
-                let name = t(style.key);
+                let name = (style.name)();
                 let effects: Vec<String> = style
                     .effects
                     .iter()
