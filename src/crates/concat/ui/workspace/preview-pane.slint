@@ -1277,13 +1277,15 @@ export component PreviewPane inherits Rectangle {
 
                     // The one control the view needs: the way back. The
                     // zoom itself is the wheel's, and a readout of it was
-                    // width spent on a number nobody steers by.
+                    // width spent on a number nobody steers by. Always
+                    // live: fitted already is a refit to the pane's new
+                    // shape, and a button that greys out at startup reads
+                    // as broken long before anyone zooms to un-grey it.
                     VerticalLayout {
                         alignment: center;
                         IconButton {
                             glyph: Glyph.fit;
                             label: I18n.t("previewPane.fitFramePane");
-                            enabled: !viewport.fitted;
                             clicked => { viewport.fit(); }
                         }
                     }

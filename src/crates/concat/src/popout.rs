@@ -14,10 +14,11 @@
 //! window in turn.
 //!
 //! One window per view, and asking for a view that is already up is a
-//! focus, not a second window. Closing it — the platform's own close, or
-//! the pane's remove row, which maps to the same teardown — takes it off
-//! the studio's list, and that is the whole of it: the main window was
-//! never disturbed, and the project is exactly where it was.
+//! focus, not a second window. Closing it — the strip's close button,
+//! the platform's own close, or the pane's remove row, all of which map
+//! to the same teardown — takes it off the studio's list, and that is
+//! the whole of it: the main window was never disturbed, and the project
+//! is exactly where it was.
 //!
 //! Two things do not follow it out. A pop-out's transport of the bin's
 //! file preview stays on the main window — that preview is the bin's own
@@ -61,11 +62,14 @@ pub fn open(shell: &Shell, kind: PaneKind) {
         }
     };
 
-    // The platform's own decorations: a bar carrying the view's name and
-    // the close button every window must have. `no-frame` reads
-    // own-window-buttons, and the strip that button would sit in is not
-    // built in a pop-out at all — see app.slint.
-    app.set_own_window_buttons(false);
+    // The window's own strip, on the platforms whose decorations were
+    // taken off: PopoutBar (app.slint) draws the view's name, the drag
+    // region and the close button, exactly as the main window's strip
+    // does. `no-frame` reads own-window-buttons, so asking for the strip
+    // also keeps the platform from adding a bar of its own over it. On
+    // macOS this is false and the traffic lights still move and close
+    // the window; no strip is built there.
+    app.set_own_window_buttons(platform::OWN_WINDOW_BUTTONS);
     app.set_macos(platform::MACOS);
     app.set_phone(false);
     app.set_on_start(false);
@@ -82,10 +86,11 @@ pub fn open(shell: &Shell, kind: PaneKind) {
     // works here and lands in the same studio. See `wire`.
     crate::wire(&app, shell);
 
-    // Both roads out land in the same place: the platform's close — the
-    // bar's button, Alt+F4, the window manager — and the pane's own remove
-    // row, which the tree maps to `popout-close`. Either way the entry
-    // goes, and the last strong handle to the window with it.
+    // Every road out lands in the same place: the strip's close button
+    // and the pane's remove row both map to `popout-close`, and the
+    // platform's own close — Alt+F4, the window manager — comes through
+    // `on_close_requested`. Either way the entry goes, and the last
+    // strong handle to the window with it.
     app.on_popout_close(move || forget(kind));
     app.window().on_close_requested(move || {
         forget(kind);

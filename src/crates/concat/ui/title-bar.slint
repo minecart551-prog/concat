@@ -363,3 +363,93 @@ export component TitleBar inherits Rectangle {
         }
     }
 }
+
+// The strip a pop-out window carries where the platform's decorations
+// were taken off — everywhere but macOS, whose traffic lights already
+// move and close it (see popout.rs). A window with no bar of any kind
+// has nothing to grab and no way out but a menu row nobody finds, which
+// is what a pop-out was: this is the main strip's frame in miniature —
+// the view's name, everything that is not a control dragging, and the
+// one button a window must have.
+export component PopoutBar inherits Rectangle {
+    /// What the window is called: the same label the pane switcher and
+    /// the OS title give this view.
+    in property <string> name;
+
+    callback begin-drag();
+    callback toggle-maximize();
+    callback close();
+
+    height: 28px;
+    // The window's ground, same as the main strip: the frame the pane
+    // floats in, not a panel of its own.
+    background: Theme.page;
+
+    property <bool> drag-armed: false;
+    property <length> press-x: 0px;
+    property <length> press-y: 0px;
+
+    // Whatever is not a control drags the window — the main strip's rule,
+    // in a bar whose whole reason is to be grabbable.
+    drag := TouchArea {
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                && event.button == PointerEventButton.left) {
+                root.drag-armed = true;
+                root.press-x = self.mouse-x;
+                root.press-y = self.mouse-y;
+            } else if (event.kind == PointerEventKind.up
+                || event.kind == PointerEventKind.cancel) {
+                root.drag-armed = false;
+            }
+        }
+        moved => {
+            if (root.drag-armed && self.pressed) {
+                if (Math.abs(self.mouse-x - root.press-x) > 4px
+                    || Math.abs(self.mouse-y - root.press-y) > 4px) {
+                    root.drag-armed = false;
+                    root.begin-drag();
+                }
+            }
+        }
+        double-clicked => {
+            root.drag-armed = false;
+            root.toggle-maximize();
+        }
+    }
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        padding-left: 10px;
+        // No right padding: the close button belongs in the corner, not
+        // eight pixels shy of it.
+        padding-right: 0px;
+        spacing: 2px;
+
+        Rectangle { horizontal-stretch: 1; }
+
+        WindowButton {
+            glyph: Glyph.close;
+            danger: true;
+            clicked => { root.close(); }
+        }
+    }
+
+    // The name, centred against the whole bar rather than the space the
+    // button leaves over — the main strip centres its project name the
+    // same way. Not a hit target: a press on it falls through to the
+    // drag, and it elides before it reaches the button.
+    name-text := Text {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        max-width: parent.width - 120px;
+        overflow: elide;
+        text: root.name;
+        color: Theme.fg-muted;
+        font-size: Theme.fs-sm;
+        font-weight: Theme.weight-title;
+    }
+}

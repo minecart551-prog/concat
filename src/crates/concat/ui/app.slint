@@ -35,7 +35,7 @@ import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor } from "editor.slint";
 import { PaneKind, Panes } from "workspace/pane-switcher.slint";
 import { ChipOption, NewProjectDialog, RecentProjectData, StartData, StartScreen } from "start.slint";
-import { TitleBar } from "title-bar.slint";
+import { PopoutBar, TitleBar } from "title-bar.slint";
 import { PhoneEditor } from "phone/editor.slint";
 import {
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData,
@@ -574,9 +574,9 @@ export component App inherits Window {
             // drag region are all a desk's, and the phone shell's top bar
             // carries the two verbs that are not.
             //
-            // And none in a pop-out: that window carries the platform's own
-            // decorations, bar and close button included — see popout.rs —
-            // so a strip here would be a second title bar on top of one.
+            // And none in a pop-out: that window wears PopoutBar, built
+            // below from the same parts — so a full strip here would be a
+            // second title bar on top of one.
             if !root.phone && !root.popout: TitleBar {
                 macos: root.macos;
                 minimal: root.on-start;
@@ -651,14 +651,22 @@ export component App inherits Window {
                 close-project => { root.app-menu-selected("close-project"); }
             }
 
-            // A pop-out window *is* one seat, filling it, showing the view
-            // it was opened for — and it keeps that view for its life, so
-            // the window's name and the studio's list of pop-outs stay
-            // true. Its corner button still opens: every row there means
-            // "have this view up", which here is answered by the window
-            // already up, so picking one brings that view's window forward.
-            // The remove row closes the window, the one way back out that
-            // a window with no strip of its own leaves lying around.
+            // A pop-out window *is* one seat, showing the view it was
+            // opened for — and it keeps that view for its life, so the
+            // window's name and the studio's list of pop-outs stay true.
+            // Its corner button still opens: every row there means "have
+            // this view up", which here is answered by the window already
+            // up, so picking one brings that view's window forward.
+            //
+            // The bar above the seat is where the window is moved and
+            // closed. Not on a Mac: the traffic lights still do both
+            // there, and a strip under them would be a second title bar.
+            if root.popout && !root.macos: PopoutBar {
+                name: Panes.label(root.popout-kind);
+                begin-drag => { root.titlebar-begin-drag(); }
+                toggle-maximize => { root.titlebar-toggle-maximize(); }
+                close => { root.popout-close(); }
+            }
             if root.popout: Seat {
                 vertical-stretch: 1;
                 kind: root.popout-kind;
